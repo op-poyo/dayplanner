@@ -9,8 +9,10 @@ import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 
+/** "+1" logs are bookkeeping for goal progress, never shown as tasks. */
+private const val NOT_LOG = "(genKey IS NULL OR genKey NOT LIKE 'l:%')"
 private const val TODAY_FILTER = """
-    (date = :today) OR (date < :today AND done = 0) OR (date IS NULL AND done = 0)
+    $NOT_LOG AND ((date = :today) OR (date < :today AND done = 0) OR (date IS NULL AND done = 0))
 """
 private const val TODAY_ORDER = """
     ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date ASC,
@@ -36,7 +38,7 @@ interface TaskDao {
     /** Dated tasks in [start, endExclusive), for the Calendar page. */
     @Query(
         """
-        SELECT * FROM tasks WHERE date >= :start AND date < :endExclusive
+        SELECT * FROM tasks WHERE date >= :start AND date < :endExclusive AND $NOT_LOG
         ORDER BY date ASC, CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC, id ASC
         """
     )

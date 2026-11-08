@@ -17,7 +17,7 @@ class QuickAddTest {
         val t = task("Buy milk")
         assertEquals("Buy milk", t.title)
         assertEquals(today, t.date)
-        assertEquals(Category.OTHER, t.category)
+        assertNull(t.tag)
         assertNull(t.minutes)
     }
 
@@ -25,7 +25,7 @@ class QuickAddTest {
         val t = task("Problem sheet 4 fri #study 1h30 ^mech")
         assertEquals("Problem sheet 4", t.title)
         assertEquals(LocalDate.of(2026, 11, 13), t.date)
-        assertEquals(Category.STUDY, t.category)
+        assertEquals("study", t.tag)
         assertEquals(90, t.minutes)
         assertEquals("mech", t.goalHint)
     }
@@ -52,10 +52,16 @@ class QuickAddTest {
         assertEquals(60, task("Review 1h").minutes)
     }
 
-    @Test fun unknownTagStaysInTitle() {
+    @Test fun anyWordTagIsATag() {
         val t = task("Call mum #family")
-        assertEquals("Call mum #family", t.title)
-        assertEquals(Category.OTHER, t.category)
+        assertEquals("Call mum", t.title)
+        assertEquals("family", t.tag)
+    }
+
+    @Test fun numericHashStaysInTitle() {
+        val t = task("Fix issue #12")
+        assertEquals("Fix issue #12", t.title)
+        assertNull(t.tag)
     }
 
     @Test fun goalWithTargetAndRepeat() {

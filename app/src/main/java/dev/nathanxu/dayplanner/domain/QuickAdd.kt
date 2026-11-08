@@ -10,7 +10,8 @@ sealed interface Parsed
 data class TaskDraft(
     val title: String,
     val date: LocalDate?,
-    val category: Category,
+    /** Raw tag text after '#', lower-cased; resolved (or created) by the repository. */
+    val tag: String?,
     val minutes: Int?,
     val goalHint: String?,
     val time: LocalTime? = null,
@@ -21,7 +22,7 @@ data class GoalDraft(
     val period: Period,
     val target: Int,
     val recurring: Boolean,
-    val category: Category = Category.OTHER,
+    val tag: String? = null,
 ) : Parsed
 
 /**
@@ -65,7 +66,7 @@ object QuickAdd {
         if (words.isEmpty()) return null
 
         var date: LocalDate? = today
-        var category = Category.OTHER
+        var tag: String? = null
         var minutes: Int? = null
         var goalHint: String? = null
         var period: Period? = null
@@ -86,8 +87,7 @@ object QuickAdd {
                 lw == "@week" || lw == "@w" -> period = Period.WEEK
                 lw == "@month" || lw == "@m" -> period = Period.MONTH
                 lw == "!r" -> recurring = true
-                lw.length > 1 && lw.startsWith("#") && Category.fromTag(lw.drop(1)) != null ->
-                    category = Category.fromTag(lw.drop(1))!!
+                lw.startsWith("#") && Tags.isValidName(lw.drop(1)) -> tag = lw.drop(1)
                 lw.length > 1 && lw.startsWith("^") -> goalHint = lw.drop(1)
                 targetRx.matches(lw) -> target = targetRx.find(lw)!!.groupValues[1].toInt().coerceAtLeast(1)
                 duration1.matches(lw) -> {
@@ -103,9 +103,9 @@ object QuickAdd {
         val t = title.joinToString(" ").trim()
         if (t.isEmpty()) return null
         return if (period != null) {
-            GoalDraft(t, period!!, target, recurring, category)
+            GoalDraft(t, period!!, target, recurring, tag)
         } else {
-            TaskDraft(t, date, category, minutes?.takeIf { it > 0 }, goalHint, time)
+            TaskDraft(t, date, tag, minutes?.takeIf { it > 0 }, goalHint, time)
         }
     }
 }

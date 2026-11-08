@@ -110,7 +110,19 @@ Ordered by importance:
 5. **Calendar tab** with 3-day, week and month views. Layout logic (multi-day splitting, overlap lanes, month grid) is pure Kotlin with tests.
 - Fixed signing key so updates install over the top (one last uninstall needed when moving from v1.1).
 
-## 11. Roadmap
+## 11. v1.3 changes (from second round of use)
+
+Ordered by importance:
+1. **Bug: +1 created visible duplicate tasks.** Logs are now hidden bookkeeping.
+2. **Timetable missing.** Calendars subscribed by link often arrive with phone sync off, and v1.2 also filtered by Google's own "visible" flag. Now: per-calendar switches, a "Not synced to this phone" marker and a Turn-on-sync button.
+3. **Multiple (or no) linked accounts**; routine calendar stays single.
+4. **Routine clash warnings** against calendars and other routines (pure, tested).
+5. **Goals → Tasks** with start/end dates and daily/3-day/weekly/monthly breakdowns. Pacing generalised to any date range; a bucket asks for whatever gets you on pace by its last day.
+6. **Coloured tags** replacing emoji categories; user-defined tags. Built-in keys equal the old category names, so no data change.
+7. **4-wide split widget**, **today highlight**, **syntax help tab**.
+- Room migration 2→3 (two nullable columns), verified against SQLite with Room's expected schema. No more destructive resets.
+
+## 12. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

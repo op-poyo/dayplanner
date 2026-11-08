@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity() {
 private enum class Tab(val label: String, val icon: ImageVector) {
     TODAY("Today", Icons.Default.Home),
     CALENDAR("Calendar", Icons.Default.DateRange),
-    GOALS("Goals", Icons.Default.Star),
+    GOALS("Tasks", Icons.Default.Star),
     ROUTINES("Routines", Icons.Default.List),
 }
 
@@ -105,11 +105,13 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     val calView by vm.calView.collectAsStateWithLifecycle()
     val calEvents by vm.calEvents.collectAsStateWithLifecycle()
     val calTasks by vm.calTasks.collectAsStateWithLifecycle()
+    val tags by vm.tags.collectAsStateWithLifecycle()
 
     var tab by rememberSaveable { mutableStateOf(Tab.TODAY) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var editingTask by remember { mutableStateOf<Task?>(null) }
     var editingGoal by remember { mutableStateOf<Goal?>(null) }
+    var creatingPlan by remember { mutableStateOf(false) }
     var editingRoutine by remember { mutableStateOf<Routine?>(null) }
 
     val snackbar = remember { SnackbarHostState() }
@@ -125,6 +127,20 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     val openSettings = {
         vm.loadCalendars()
         showSettings = true
+    }
+    val tagActions = TagActions(tags) { name, color -> vm.addTag(name, color) }
+    val settingsActions = remember(vm) {
+        SettingsActions(
+            requestCalendar = { calendarPermission.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR)) },
+            setAccountLinked = { acc, on -> vm.setAccountLinked(acc, on) },
+            setCalendarShown = { id, on -> vm.setCalendarShown(id, on) },
+            enableSync = { vm.enableCalendarSync(it) },
+            chooseRoutineCalendar = { vm.chooseRoutineCalendar(it) },
+            syncNow = { vm.syncNow() },
+            addTag = { name, color -> vm.addTag(name, color) },
+            updateTag = { vm.updateTag(it) },
+            deleteTag = { vm.deleteTag(it) },
+        )
     }
     val goalActions = remember(vm) {
         GoalActions(
@@ -200,10 +216,8 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 calendars = calendars,
                 syncStatus = syncStatus,
                 canWriteCalendar = canWriteCalendar,
-                onRequestCalendar = requestCalendar,
-                onChooseAccount = { vm.chooseAccount(it) },
-                onChooseCalendar = { vm.chooseRoutineCalendar(it) },
-                onSyncNow = { vm.syncNow() },
+                tags = tags,
+                actions = settingsActions,
                 contentPadding = padding,
             )
         } else when (tab) {
@@ -213,6 +227,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 upcoming = upcoming,
                 plan = plan,
                 goals = goals,
+                tags = tags,
                 loading = loading,
                 onOpenGoals = { tab = Tab.GOALS },
                 quickAddFocus = quickAddFocus,
@@ -229,6 +244,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 today = today,
                 events = calEvents,
                 tasks = calTasks,
+                tags = tags,
                 onMode = { vm.setCalMode(it) },
                 onStep = { vm.stepCal(it) },
                 onToday = { vm.calToday() },
@@ -242,12 +258,15 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             Tab.GOALS -> GoalsScreen(
                 today = today,
                 goals = goals,
+                tags = tags,
                 onQuickAdd = { vm.quickAdd(it) },
+                onNew = { creatingPlan = true },
                 actions = goalActions,
                 contentPadding = padding,
             )
             Tab.ROUTINES -> RoutinesScreen(
                 routines = routines,
+                tags = tags,
                 canWriteCalendar = canWriteCalendar,
                 onRequestCalendar = requestCalendar,
                 onAdd = { text, mask, sync -> vm.addRoutine(text, mask, sync) },
@@ -268,22 +287,28 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
         TaskEditor(
             task = t,
             goals = goals.map { it.goal },
+            tagActions = tagActions,
             onSave = { vm.updateTask(it); editingTask = null },
             onDelete = { vm.delete(it); editingTask = null },
             onDismiss = { editingTask = null },
         )
     }
-    editingGoal?.let { g ->
-        GoalEditor(
-            goal = g,
+    if (creatingPlan || editingGoal != null) {
+        PlanEditor(
+            goal = editingGoal,
+            today = today,
+            tagActions = tagActions,
+            onCreate = { vm.createPlan(it); creatingPlan = false },
             onSave = { vm.updateGoal(it); editingGoal = null },
             onDelete = { vm.deleteGoal(it); editingGoal = null },
-            onDismiss = { editingGoal = null },
+            onDismiss = { creatingPlan = false; editingGoal = null },
         )
     }
     editingRoutine?.let { r ->
         RoutineEditor(
             routine = r,
+            tagActions = tagActions,
+            checkClashes = { mask, time, minutes, id -> vm.clashesFor(mask, time, minutes, id) },
             onSave = { vm.updateRoutine(it); editingRoutine = null },
             onDelete = { vm.deleteRoutine(it); editingRoutine = null },
             onDismiss = { editingRoutine = null },

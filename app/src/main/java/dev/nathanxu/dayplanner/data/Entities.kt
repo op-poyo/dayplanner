@@ -4,8 +4,9 @@ import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
-import dev.nathanxu.dayplanner.domain.Category
+import dev.nathanxu.dayplanner.domain.Cadence
 import dev.nathanxu.dayplanner.domain.Period
+import dev.nathanxu.dayplanner.domain.Tags
 import java.time.LocalDate
 import java.time.LocalTime
 
@@ -18,7 +19,8 @@ data class Task(
     val title: String,
     /** null = undated ("someday"). */
     val date: LocalDate?,
-    val category: Category = Category.OTHER,
+    /** Tag key (see [Tags]); built-in keys match the old category names. */
+    val category: String = Tags.OTHER,
     val minutes: Int? = null,
     val time: LocalTime? = null,
     val goalId: Long? = null,
@@ -51,16 +53,28 @@ data class Goal(
     val target: Int = 1,
     val recurring: Boolean = false,
     val archived: Boolean = false,
-    val category: Category = Category.OTHER,
-    /** For count goals: auto-create a paced daily to-do. */
+    /** Tag key (see [Tags]); built-in keys match the old category names. */
+    val category: String = Tags.OTHER,
+    /** For count goals: auto-create paced to-dos. Off = log with +1 only. */
     val split: Boolean = true,
+    /** Inclusive last day. null = end of the WEEK/MONTH period that starts at [periodStart]. */
+    val endDate: LocalDate? = null,
+    /** Breakdown size for the paced to-dos. null = daily (rows from before v1.3). */
+    val cadence: Cadence? = null,
 )
+
+/** [periodStart] is the plan's first day for every kind of plan. */
+val Goal.start: LocalDate get() = periodStart
+val Goal.end: LocalDate get() = endDate ?: period.lastDay(periodStart)
+val Goal.effectiveCadence: Cadence get() = if (!split) Cadence.NONE else cadence ?: Cadence.DAILY
+fun Goal.isActiveOn(date: LocalDate): Boolean = !date.isBefore(start) && !date.isAfter(end)
 
 @Entity(tableName = "routines")
 data class Routine(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val title: String,
-    val category: Category = Category.OTHER,
+    /** Tag key (see [Tags]); built-in keys match the old category names. */
+    val category: String = Tags.OTHER,
     val minutes: Int? = null,
     /** Bit 0 = Monday … bit 6 = Sunday. */
     val daysMask: Int,

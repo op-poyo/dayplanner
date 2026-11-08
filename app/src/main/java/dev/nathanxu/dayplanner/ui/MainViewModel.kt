@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import dev.nathanxu.dayplanner.calendar.CalInfo
 import dev.nathanxu.dayplanner.data.Goal
 import dev.nathanxu.dayplanner.data.GoalProgress
+import dev.nathanxu.dayplanner.data.PlanDraft
 import dev.nathanxu.dayplanner.data.Routine
 import dev.nathanxu.dayplanner.data.SettingsState
 import dev.nathanxu.dayplanner.data.SyncStatus
@@ -14,6 +15,8 @@ import dev.nathanxu.dayplanner.data.TodayPlan
 import dev.nathanxu.dayplanner.domain.CalendarLayout
 import dev.nathanxu.dayplanner.domain.CalendarMode
 import dev.nathanxu.dayplanner.domain.DaySegment
+import dev.nathanxu.dayplanner.domain.Tag
+import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.repository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -27,6 +30,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.YearMonth
 
 /** What the Calendar page is showing. [selected] is the highlighted day in month view. */
@@ -87,9 +91,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadCalendars() = viewModelScope.launch { _calendars.value = repo.calendars() }
 
-    fun chooseAccount(name: String) = viewModelScope.launch {
-        repo.chooseAccount(name)
+    fun setAccountLinked(name: String, linked: Boolean) = viewModelScope.launch {
+        repo.setAccountLinked(name, linked)
         afterCalendarChoice()
+    }
+
+    fun setCalendarShown(id: Long, shown: Boolean) = viewModelScope.launch {
+        repo.setCalendarShown(id, shown)
+        refresh()
+    }
+
+    fun enableCalendarSync(cal: CalInfo) = viewModelScope.launch {
+        _messages.emit(repo.enableCalendarSync(cal))
+        refresh()
     }
 
     fun chooseRoutineCalendar(id: Long) = viewModelScope.launch {
@@ -105,6 +119,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun syncNow() = viewModelScope.launch { _messages.emit(repo.syncRoutines().message) }
+
+    // ---------- tags ----------
+
+    val tags: StateFlow<List<Tag>> = repo.tags.tags
+
+    /** Returns the new (or existing same-named) tag, or null if the name isn't allowed. */
+    fun addTag(name: String, color: Int?): Tag? {
+        if (!Tags.isValidName(name)) {
+            _messages.tryEmit("Tags are letters/numbers, up to 20 characters, starting with a letter")
+            return null
+        }
+        return repo.tags.add(name, color)
+    }
+    fun updateTag(tag: Tag) = repo.tags.update(tag)
+    fun deleteTag(key: String) = repo.tags.delete(key)
 
     // ---------- calendar page ----------
 
@@ -213,6 +242,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _messages.emit("Saved “${goal.title}”")
     }
     fun deleteGoal(goal: Goal) = viewModelScope.launch { repo.deleteGoal(goal) }
+    fun createPlan(draft: PlanDraft) = viewModelScope.launch {
+        _messages.emit(repo.createPlan(draft, _today.value))
+    }
     fun addStep(goal: Goal, text: String) = viewModelScope.launch {
         _messages.emit(repo.addStep(goal, text, _today.value))
     }
@@ -225,6 +257,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun updateRoutine(r: Routine) = viewModelScope.launch {
         _messages.emit(repo.updateRoutine(r, _today.value))
     }
+    /** For the routine editor's live clash warning. */
+    suspend fun clashesFor(mask: Int, time: LocalTime, minutes: Int, routineId: Long?): List<String> =
+        runCatching { repo.routineClashes(mask, time, minutes, routineId) }.getOrDefault(emptyList())
+
     fun setRoutineSync(r: Routine, on: Boolean) = viewModelScope.launch {
         repo.setRoutineSync(r, on)?.let { _messages.emit(it) }
     }

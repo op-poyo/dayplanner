@@ -5,14 +5,20 @@ import android.util.Log
 import androidx.glance.appwidget.updateAll
 import dev.nathanxu.dayplanner.calendar.CalInfo
 import dev.nathanxu.dayplanner.calendar.CalendarSource
+import dev.nathanxu.dayplanner.domain.Busy
 import dev.nathanxu.dayplanner.domain.CalEvent
-import dev.nathanxu.dayplanner.domain.Category
+import dev.nathanxu.dayplanner.domain.CalendarLayout
+import dev.nathanxu.dayplanner.domain.Cadence
+import dev.nathanxu.dayplanner.domain.Clashes
 import dev.nathanxu.dayplanner.domain.DayPlan
 import dev.nathanxu.dayplanner.domain.Days
 import dev.nathanxu.dayplanner.domain.GoalDraft
 import dev.nathanxu.dayplanner.domain.GoalStatus
 import dev.nathanxu.dayplanner.domain.Pacing
+import dev.nathanxu.dayplanner.domain.Period
 import dev.nathanxu.dayplanner.domain.QuickAdd
+import dev.nathanxu.dayplanner.domain.Tag
+import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.TaskDraft
 import dev.nathanxu.dayplanner.domain.TimelineItem
 import dev.nathanxu.dayplanner.domain.later
@@ -26,10 +32,12 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.time.DayOfWeek
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 
 data class GoalProgress(val goal: Goal, val status: GoalStatus, val steps: List<Task>)
@@ -46,12 +54,28 @@ data class TodayPlan(
 /** Result of the last routine → calendar sync, shown on the Routines and Settings screens. */
 data class SyncStatus(val ok: Boolean, val message: String, val at: LocalDateTime = LocalDateTime.now())
 
+/** Everything the "New plan" form collects. */
+data class PlanDraft(
+    val title: String,
+    val tag: String,
+    val start: LocalDate,
+    val end: LocalDate,
+    /** Only used for single-day plans, which become an ordinary timed task. */
+    val startTime: LocalTime?,
+    val endTime: LocalTime?,
+    /** 1 = done once / tracked by steps; >1 = a count that gets broken down. */
+    val target: Int,
+    val cadence: Cadence,
+    val recurring: Boolean,
+)
+
 class Repository(
     private val context: Context,
     private val db: AppDatabase,
     val calendar: CalendarSource,
     private val travel: TravelService,
     val settings: Settings,
+    val tags: TagStore,
 ) {
     private val dayFmt = DateTimeFormatter.ofPattern("EEE d MMM")
     private val hm = DateTimeFormatter.ofPattern("HH:mm")
@@ -69,7 +93,7 @@ class Repository(
         db.tasks().observeBetween(start, endExclusive)
     fun observeRoutines(): Flow<List<Routine>> = db.routines().observeAll()
 
-    /** Goals whose period contains [today], with % / pace / today's share and their steps. */
+    /** Current and upcoming plans (not finished ones), with % / pace / today's share and steps. */
     fun observeGoals(today: LocalDate): Flow<List<GoalProgress>> = combine(
         db.goals().observeActive(),
         db.tasks().observeGoalStats(today),
@@ -77,12 +101,12 @@ class Repository(
     ) { goals, stats, steps ->
         val statsBy = stats.associateBy { it.goalId }
         val stepsBy = steps.groupBy { it.goalId }
-        goals.filter { it.period.contains(it.periodStart, today) }.map { g ->
+        goals.filter { !it.end.isBefore(today) }.map { g ->
             val s = statsBy[g.id]
             GoalProgress(
                 goal = g,
                 status = GoalStatus.of(
-                    target = g.target, period = g.period, start = g.periodStart, today = today,
+                    target = g.target, start = g.start, end = g.end, today = today,
                     doneUnits = s?.doneUnits ?: 0, stepTotal = s?.stepTotal ?: 0, stepDone = s?.stepDone ?: 0,
                     todayUnits = s?.todayUnits ?: 0, todayDoneUnits = s?.todayDoneUnits ?: 0,
                 ),
@@ -93,33 +117,50 @@ class Repository(
 
     suspend fun todayTasks(today: LocalDate): List<Task> = db.tasks().today(today)
 
-    // ---------- account / calendars ----------
+    // ---------- tags ----------
+
+    /** Tag key for "#raw" (created if new), or Other. Second value: whether it was created. */
+    private fun tagFor(raw: String?): Pair<String, Tag?> {
+        if (raw == null) return Tags.OTHER to null
+        val (tag, created) = tags.resolveOrCreate(raw)
+        return tag.key to if (created) tag else null
+    }
+
+    // ---------- accounts / calendars ----------
 
     suspend fun calendars(): List<CalInfo> = calendar.calendars()
 
     fun googleAccounts(cals: List<CalInfo>): List<String> =
         cals.filter { it.isGoogle }.map { it.accountName }.distinct()
 
-    /**
-     * Calendars to read: every visible calendar of the chosen account. With no account chosen and
-     * a single Google account, that account is chosen automatically; with several, everything is
-     * shown until you pick (and routine sync waits for the pick).
-     */
+    /** Linked accounts; with none ever chosen and exactly one Google account, that one is linked. */
+    private fun linkedAccounts(cals: List<CalInfo>): Set<String>? {
+        settings.current.accounts?.let { return it }
+        val google = googleAccounts(cals)
+        if (google.size != 1) return null
+        settings.update { it.copy(accounts = google.toSet()) }
+        return google.toSet()
+    }
+
+    /** Calendars to read, or null for "all" (no account chosen yet). */
     private suspend fun readCalendarIds(): Set<Long>? {
         val cals = calendar.calendars()
-        val account = settings.current.accountName ?: autoPickAccount(cals) ?: return null
-        return cals.filter { it.accountName == account && it.visible }.map { it.id }.toSet()
+        val accounts = linkedAccounts(cals) ?: return null
+        val hidden = settings.current.hiddenCalendars
+        return cals.filter { it.accountName in accounts && it.id !in hidden }.map { it.id }.toSet()
     }
 
-    private fun autoPickAccount(cals: List<CalInfo>): String? {
-        val accounts = googleAccounts(cals)
-        if (accounts.size != 1) return null
-        settings.update { it.copy(accountName = accounts.single()) }
-        return accounts.single()
+    fun setAccountLinked(account: String, linked: Boolean) {
+        settings.update { s ->
+            val base = s.accounts ?: emptySet()
+            s.copy(accounts = if (linked) base + account else base - account)
+        }
     }
 
-    fun chooseAccount(accountName: String) {
-        settings.update { SettingsState(accountName = accountName, routineCalendarId = null) }
+    fun setCalendarShown(calendarId: Long, shown: Boolean) {
+        settings.update { s ->
+            s.copy(hiddenCalendars = if (shown) s.hiddenCalendars - calendarId else s.hiddenCalendars + calendarId)
+        }
     }
 
     fun chooseRoutineCalendar(calendarId: Long) {
@@ -128,29 +169,38 @@ class Repository(
 
     /** The calendar routines go into, or an explanation of why there isn't one. */
     private fun routineCalendar(cals: List<CalInfo>): Result<CalInfo> {
-        val account = settings.current.accountName ?: autoPickAccount(cals)
-        if (account == null) {
+        val accounts = linkedAccounts(cals)
+        if (accounts == null) {
             return Result.failure(
                 IllegalStateException(
                     if (googleAccounts(cals).isEmpty()) "No Google account calendars on this phone"
-                    else "Choose which Google account to use in Settings ⚙"
+                    else "Link a Google account in Settings ⚙"
                 )
             )
         }
-        val inAccount = cals.filter { it.accountName == account && it.writable }
-        val pick = inAccount.firstOrNull { it.id == settings.current.routineCalendarId }
-            ?: inAccount.firstOrNull { it.primary }
-            ?: inAccount.firstOrNull()
+        if (accounts.isEmpty()) return Result.failure(IllegalStateException("No Google accounts linked — see Settings ⚙"))
+        val writable = cals.filter { it.accountName in accounts && it.writable }
+        val pick = writable.firstOrNull { it.id == settings.current.routineCalendarId }
+            ?: writable.firstOrNull { it.primary && it.isGoogle }
+            ?: writable.firstOrNull()
         return pick?.let { Result.success(it) }
-            ?: Result.failure(IllegalStateException("No writable calendar in $account"))
+            ?: Result.failure(IllegalStateException("No writable calendar in the linked accounts"))
     }
+
+    suspend fun enableCalendarSync(cal: CalInfo): String =
+        if (calendar.enableSync(cal)) {
+            setCalendarShown(cal.id, true)
+            "Sync turned on for “${cal.name}”. Events can take a few minutes to arrive."
+        } else {
+            "Android didn't allow it. In the Google Calendar app: Settings → ${cal.name} → turn on Sync."
+        }
 
     // ---------- daily housekeeping ----------
 
     /**
      * Idempotent, run on app open, widget refresh and after edits:
-     * clears yesterday's unticked generated tasks, renews recurring goals, creates today's
-     * routine tasks and each count goal's paced daily share.
+     * clears yesterday's unticked generated to-dos, finishes/renews plans, creates today's
+     * routine to-dos and each plan's paced share for the current breakdown bucket.
      */
     suspend fun ensureFor(date: LocalDate) = housekeeping.withLock {
         val tasks = db.tasks()
@@ -159,23 +209,21 @@ class Repository(
         tasks.deleteStaleGenerated("g:", date)
 
         for (g in goals.active()) {
-            val currentStart = g.period.startOf(date)
-            if (g.periodStart.isBefore(currentStart)) {
-                tasks.deleteOpenSplits(g.id)
-                goals.update(g.copy(archived = true))
-                if (g.recurring) goals.insert(g.copy(id = 0, periodStart = currentStart, archived = false))
-            }
+            if (!g.end.isBefore(date)) continue
+            tasks.deleteOpenSplits(g.id)
+            goals.update(g.copy(archived = true))
+            if (g.recurring) goals.insert(renewed(g, date))
         }
 
         for (g in goals.active()) {
-            if (!g.split || g.target <= 1 || !g.period.contains(g.periodStart, date)) continue
+            val cadence = g.effectiveCadence
+            if (cadence == Cadence.NONE || g.target <= 1 || !g.isActiveOn(date)) continue
             val doneBefore = tasks.doneUnitsBefore(g.id, date)
-            val q = Pacing.quotaToday(g.target, g.period, g.periodStart, date, doneBefore)
+            val q = Pacing.quotaToday(g.target, g.start, g.end, cadence, date, doneBefore)
             if (q > 0) {
                 tasks.insertIgnore(
                     Task(
-                        title = if (q > 1) "${g.title} ×$q" else g.title,
-                        date = date, category = g.category, goalId = g.id,
+                        title = g.title, date = date, category = g.category, goalId = g.id,
                         units = q, genKey = GenKeys.split(g.id, date),
                     )
                 )
@@ -194,6 +242,17 @@ class Repository(
         }
     }
 
+    /** Next instance of a repeating plan, covering [date]. */
+    private fun renewed(g: Goal, date: LocalDate): Goal = when (g.period) {
+        Period.WEEK, Period.MONTH -> g.copy(id = 0, periodStart = g.period.startOf(date), endDate = null, archived = false)
+        Period.CUSTOM -> {
+            val len = ChronoUnit.DAYS.between(g.start, g.end) + 1
+            var start = g.end.plusDays(1)
+            while (start.plusDays(len - 1).isBefore(date)) start = start.plusDays(len)
+            g.copy(id = 0, periodStart = start, endDate = start.plusDays(len - 1), archived = false)
+        }
+    }
+
     // ---------- tasks ----------
 
     /** Returns a short confirmation or error message for a snackbar. */
@@ -203,48 +262,82 @@ class Repository(
             is TaskDraft -> {
                 val goal = p.goalHint?.let { hint ->
                     db.goals().active()
-                        .filter { it.period.contains(it.periodStart, today) }
+                        .filter { it.isActiveOn(today) }
                         .firstOrNull { it.title.lowercase().contains(hint) }
                 }
-                insertDraft(p, goal)
+                val newTag = insertDraft(p, goal)
                 buildString {
                     append("Added “${p.title}”")
                     append(" · ").append(p.date?.let { if (it == today) "today" else dayFmt.format(it) } ?: "someday")
                     p.time?.let { append(" ").append(hm.format(it)) }
                     if (goal != null) append(" → ${goal.title}")
-                    else if (p.goalHint != null) append(" (no goal matched ^${p.goalHint})")
+                    else if (p.goalHint != null) append(" (no plan matched ^${p.goalHint})")
+                    newTag?.let { append(" · new tag ${it.name}") }
                 }
             }
             is GoalDraft -> {
+                val (tagKey, newTag) = tagFor(p.tag)
                 db.goals().insert(
                     Goal(
                         title = p.title, period = p.period, periodStart = p.period.startOf(today),
-                        target = p.target, recurring = p.recurring, category = p.category,
+                        target = p.target, recurring = p.recurring, category = tagKey,
                     )
                 )
                 ensureFor(today)
                 refreshWidget()
                 val split = if (p.target > 1) ", split into daily to-dos" else ""
-                "Goal added: ${p.title} ×${p.target} ${p.period.label.lowercase()}$split" + if (p.recurring) " ↻" else ""
+                "Plan added: ${p.title} ×${p.target} ${p.period.label.lowercase()}$split" +
+                    (if (p.recurring) " ↻" else "") + (newTag?.let { " · new tag ${it.name}" } ?: "")
             }
         }
     }
 
-    /** Adds a step to a goal from the goal card. */
+    /** From the "New plan" form. A single-day plan with a count of 1 is just a task. */
+    suspend fun createPlan(d: PlanDraft, today: LocalDate): String {
+        if (d.title.isBlank()) return "Give it a title"
+        if (d.end.isBefore(d.start)) return "End date is before the start"
+        if (d.start == d.end && d.target <= 1) {
+            val minutes = if (d.startTime != null && d.endTime != null && d.endTime.isAfter(d.startTime)) {
+                Duration.between(d.startTime, d.endTime).toMinutes().toInt()
+            } else null
+            db.tasks().insert(
+                Task(title = d.title.trim(), date = d.start, time = d.startTime, minutes = minutes, category = d.tag)
+            )
+            refreshWidget()
+            return "Added “${d.title.trim()}” · " + if (d.start == today) "today" else dayFmt.format(d.start)
+        }
+        db.goals().insert(
+            Goal(
+                title = d.title.trim(), period = Period.CUSTOM, periodStart = d.start, endDate = d.end,
+                target = d.target.coerceAtLeast(1), recurring = d.recurring, category = d.tag,
+                cadence = d.cadence, split = d.cadence != Cadence.NONE,
+            )
+        )
+        ensureFor(today)
+        refreshWidget()
+        val range = "${dayFmt.format(d.start)} – ${dayFmt.format(d.end)}"
+        val breakdown = if (d.target > 1 && d.cadence != Cadence.NONE) " · ${d.cadence.label.lowercase()} to-dos" else ""
+        return "Plan added: ${d.title.trim()} · $range$breakdown"
+    }
+
+    /** Adds a step to a plan from its card. */
     suspend fun addStep(goal: Goal, text: String, today: LocalDate): String {
         val p = QuickAdd.parse(text, today) as? TaskDraft ?: return "Steps need a title (no @week/@month)"
         insertDraft(p, goal)
         return "Step added to ${goal.title}"
     }
 
-    private suspend fun insertDraft(p: TaskDraft, goal: Goal?) {
+    /** Returns the tag it created, if any. */
+    private suspend fun insertDraft(p: TaskDraft, goal: Goal?): Tag? {
+        val (tagKey, newTag) = tagFor(p.tag)
         db.tasks().insert(
             Task(
                 title = p.title, date = p.date, time = p.time, minutes = p.minutes, goalId = goal?.id,
-                category = if (p.category == Category.OTHER && goal != null) goal.category else p.category,
+                category = if (p.tag == null && goal != null) goal.category else tagKey,
             )
         )
         refreshWidget()
+        return newTag
     }
 
     suspend fun updateTask(task: Task) {
@@ -257,8 +350,23 @@ class Repository(
         refreshWidget()
     }
 
+    /**
+     * Checkbox on a task. A plan's to-do worth several units (e.g. "LeetCode ×3 this week") ticks
+     * off one unit at a time: each tap logs 1 towards the plan and the to-do shrinks to ×2.
+     */
     suspend fun toggle(id: Long) {
         val t = db.tasks().get(id) ?: return
+        if (!t.done && t.units > 1 && t.goalId != null && t.genKey?.startsWith("g:") == true) {
+            db.tasks().insert(
+                Task(
+                    title = t.title, date = t.date, category = t.category, goalId = t.goalId,
+                    genKey = GenKeys.log(t.goalId), done = true, doneAt = System.currentTimeMillis(),
+                )
+            )
+            db.tasks().update(t.copy(units = t.units - 1))
+            refreshWidget()
+            return
+        }
         setDone(id, !t.done)
     }
 
@@ -267,9 +375,9 @@ class Repository(
         refreshWidget()
     }
 
-    // ---------- goals ----------
+    // ---------- goals / plans ----------
 
-    /** "+1": logs a done unit against the goal for today. */
+    /** "+1": logs a done unit against the plan for today. */
     suspend fun logGoal(goal: Goal, today: LocalDate) {
         db.tasks().insert(
             Task(
@@ -280,11 +388,15 @@ class Repository(
         refreshWidget()
     }
 
-    /** Saves an edited goal; today's split is recalculated if the target or split setting changed. */
+    /** Saves an edited plan; today's to-do is recalculated whenever anything it depends on changed. */
     suspend fun updateGoal(goal: Goal, today: LocalDate) {
         val old = db.goals().get(goal.id)
-        db.goals().update(goal.copy(target = goal.target.coerceAtLeast(1)))
-        if (old == null || old.target != goal.target || old.split != goal.split || old.title != goal.title) {
+        val fixed = goal.copy(target = goal.target.coerceAtLeast(1))
+        db.goals().update(fixed)
+        if (old == null || old.target != fixed.target || old.split != fixed.split || old.title != fixed.title ||
+            old.start != fixed.start || old.end != fixed.end || old.effectiveCadence != fixed.effectiveCadence ||
+            old.category != fixed.category
+        ) {
             db.tasks().deleteOpenSplits(goal.id)
             ensureFor(today)
         }
@@ -306,21 +418,29 @@ class Repository(
     suspend fun addRoutine(text: String, daysMask: Int, sync: Boolean, today: LocalDate): String {
         val p = QuickAdd.parse(text, today) as? TaskDraft ?: return "Routines need a title (no @week/@month)"
         if (daysMask == 0) return "Pick at least one day"
-        db.routines().insert(
+        val (tagKey, newTag) = tagFor(p.tag)
+        val id = db.routines().insert(
             Routine(
-                title = p.title, category = p.category, minutes = p.minutes, daysMask = daysMask,
+                title = p.title, category = tagKey, minutes = p.minutes, daysMask = daysMask,
                 time = p.time, syncToCalendar = sync,
             )
         )
         ensureFor(today)
         val status = syncRoutines()
         refreshWidget()
+        val clashes = p.time?.let { routineClashes(daysMask, it, p.minutes ?: 30, id, today) }.orEmpty()
         val base = "Routine added: ${p.title} · ${Days.describe(daysMask)}" + (p.time?.let { " ${hm.format(it)}" } ?: "")
-        return when {
-            !sync -> base
-            p.time == null -> "$base. Add a time (e.g. 18:30) to put it in Google Calendar"
-            !status.ok -> "$base. ${status.message}"
-            else -> "$base · added to Google Calendar"
+        return buildString {
+            append(
+                when {
+                    !sync -> base
+                    p.time == null -> "$base. Add a time (e.g. 18:30) to put it in Google Calendar"
+                    !status.ok -> "$base. ${status.message}"
+                    else -> "$base · added to Google Calendar"
+                }
+            )
+            newTag?.let { append(" · new tag ${it.name}") }
+            if (clashes.isNotEmpty()) append("\n⚠ Clashes: ").append(clashes.joinToString("; "))
         }
     }
 
@@ -343,7 +463,37 @@ class Repository(
         ensureFor(today)
         val status = syncRoutines()
         refreshWidget()
-        return if (status.ok) "Saved “${r.title}”" else "Saved. ${status.message}"
+        val clashes = r.time?.let { routineClashes(r.daysMask, it, r.minutes ?: 30, r.id, today) }.orEmpty()
+        return buildString {
+            append(if (status.ok) "Saved “${r.title}”" else "Saved. ${status.message}")
+            if (clashes.isNotEmpty()) append("\n⚠ Clashes: ").append(clashes.joinToString("; "))
+        }
+    }
+
+    /**
+     * What a routine on [mask] days at [time] would overlap in the next 4 weeks: events in your
+     * linked calendars and your other routines. [excludeRoutineId] is the routine itself (its own
+     * calendar event doesn't count).
+     */
+    suspend fun routineClashes(
+        mask: Int, time: LocalTime, minutes: Int, excludeRoutineId: Long?, from: LocalDate = LocalDate.now(),
+    ): List<String> {
+        val days = 28
+        val routines = db.routines().all()
+        val ownEvent = routines.firstOrNull { it.id == excludeRoutineId }?.calendarEventId
+        val events = runCatching { eventsBetween(from, from.plusDays(days.toLong())) }.getOrDefault(emptyList())
+        val eventIds = events.map { it.id }.toSet()
+
+        val busy = mutableListOf<Busy>()
+        CalendarLayout.byDay(events.filter { !it.allDay && it.id != ownEvent }, from, from.plusDays(days.toLong()))
+            .forEach { (day, segs) -> segs.forEach { busy += Busy(day, it.startMin, it.endMin, it.event.title) } }
+        for (o in routines) {
+            if (o.id == excludeRoutineId || !o.active || o.time == null) continue
+            // A synced routine already shows up as a calendar event; don't count it twice.
+            if (o.calendarEventId != null && o.calendarEventId in eventIds) continue
+            busy += Clashes.routineBusy(o.daysMask, o.time, o.minutes ?: 30, "${o.title} (routine)", from, days)
+        }
+        return Clashes.summarise(Clashes.find(mask, time, minutes, from, days, busy))
     }
 
     suspend fun setRoutineActive(r: Routine, active: Boolean) {
@@ -363,12 +513,12 @@ class Repository(
     suspend fun deleteRoutine(r: Routine) {
         r.calendarEventId?.let { calendar.deleteEvent(it) }
         db.routines().delete(r)
-        settings.current.accountName?.let { calendar.requestSync(it) }
+        routineCalendar(calendar.calendars()).getOrNull()?.let { calendar.requestSync(it.accountName, it.accountType) }
     }
 
     /**
      * Makes Google Calendar match the routines: each active, timed routine that wants syncing gets
-     * one weekly recurring event in the chosen calendar; events for routines that don't (or that
+     * one weekly recurring event in the routine calendar; events for routines that don't (or that
      * sit in a different calendar after you switch) are removed. If you delete a routine's event
      * in Google Calendar yourself, syncing is switched off for it rather than fighting you.
      */
@@ -458,7 +608,7 @@ class Repository(
         if (!calendar.hasPermission()) return TodayPlan(emptyList(), false, travel.enabled, null)
 
         val cals = calendar.calendars()
-        val needsChoice = settings.current.accountName == null && googleAccounts(cals).size > 1
+        val needsChoice = settings.current.accounts == null && googleAccounts(cals).size > 1
         val events = calendar.eventsOn(today, readCalendarIds())
         val minutes = DayPlan.travelLegs(events).associateWith { (a, b) -> travel.minutes(a, b) }
 

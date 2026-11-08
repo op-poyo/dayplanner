@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -37,6 +38,8 @@ import androidx.compose.foundation.clickable
 import dev.nathanxu.dayplanner.data.Routine
 import dev.nathanxu.dayplanner.data.SyncStatus
 import dev.nathanxu.dayplanner.domain.Days
+import dev.nathanxu.dayplanner.domain.Tag
+import dev.nathanxu.dayplanner.domain.Tags
 import java.time.DayOfWeek
 import java.time.format.DateTimeFormatter
 
@@ -45,6 +48,7 @@ private val hm = DateTimeFormatter.ofPattern("HH:mm")
 @Composable
 fun RoutinesScreen(
     routines: List<Routine>,
+    tags: List<Tag>,
     canWriteCalendar: Boolean,
     onRequestCalendar: () -> Unit,
     onAdd: (text: String, mask: Int, sync: Boolean) -> Unit,
@@ -108,7 +112,7 @@ fun RoutinesScreen(
                 })
             }
             QuickAddBar(
-                placeholder = "Gym 18:00 1h #gym",
+                placeholder = "Gym 18:00 1h #exercise",
                 onSubmit = {
                     if (sync && !canWriteCalendar) onRequestCalendar()
                     onAdd(it, mask, sync)
@@ -143,13 +147,14 @@ fun RoutinesScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        items(routines, key = { it.id }) { r -> RoutineRow(r, onSetActive, onSetSync, onDelete, onEdit) }
+        items(routines, key = { it.id }) { r -> RoutineRow(r, Tags.find(r.category, tags), onSetActive, onSetSync, onDelete, onEdit) }
     }
 }
 
 @Composable
 private fun RoutineRow(
     r: Routine,
+    tag: Tag,
     onSetActive: (Routine, Boolean) -> Unit,
     onSetSync: (Routine, Boolean) -> Unit,
     onDelete: (Routine) -> Unit,
@@ -161,7 +166,11 @@ private fun RoutineRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("${r.category.emoji} ${r.title}", fontWeight = FontWeight.Medium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TagDot(tag.color)
+                Spacer(Modifier.width(6.dp))
+                Text(r.title, fontWeight = FontWeight.Medium)
+            }
             val meta = buildList {
                 add(Days.describe(r.daysMask))
                 r.time?.let { add(hm.format(it)) }

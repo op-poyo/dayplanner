@@ -1,4 +1,4 @@
-# DayPlanner v1.2
+# DayPlanner v1.3
 
 Personal Android planner: Google Calendar timeline with travel times, daily tasks, weekly/monthly goals, routines, and a home-screen widget. Local-first, no server. See `PLAN.md` for the design and its self-review.
 
@@ -48,7 +48,20 @@ One box adds everything:
 - Pause a routine, turn its 📅 off, or delete it, and the event is removed. If you delete the event in Google Calendar yourself, the app stops syncing that routine instead of re-creating it.
 - The app is the source of truth: edits made to the event in Google Calendar aren't read back.
 
+### v1.3 at a glance
+
+- **Tasks tab** (was Goals): *New task* sets a title, tag, start (default today) and end date, how many times, and a daily / every-3-days / weekly / monthly breakdown. A one-day task can have start and end times and becomes an ordinary to-do. Sections: Now and Coming up.
+- **Multi-unit to-dos**: a breakdown to-do worth ×3 ticks off one at a time.
+- **Tags**: coloured, not emoji. `#anything` in quick-add creates a tag; manage names and colours in Settings → Tags.
+- **Clash warnings**: adding or editing a routine checks the next 4 weeks against your calendars and other routines.
+- **Widget**: 4 wide — today's schedule on the left, to-dos on the right.
+- **Calendar tab**: today is highlighted in every view.
+
 ### Settings ⚙ (top right)
+
+Three tabs: **Calendars**, **Tags**, **Syntax**.
+- Switch on any number of accounts (or none); untick individual calendars.
+- A calendar marked *Not synced to this phone* (common for ones subscribed by link, like a UCL timetable) has a **Turn on sync** button. If Android refuses, do it in the Google Calendar app: Settings → that calendar → Sync.
 
 - **Google account**: only this account's calendars are shown, and routines go into it. Pick it first if you have several accounts.
 - **Calendar for routines**: switching moves existing routine events across.
@@ -76,7 +89,7 @@ Tap anything to edit it: tasks (title, date, time, duration, category, goal), go
 ```
 ./gradlew test
 ```
-33 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), periods and weekday masks.
+46 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), breakdown buckets, tags, routine clashes, periods and weekday masks.
 
 ## Project layout
 

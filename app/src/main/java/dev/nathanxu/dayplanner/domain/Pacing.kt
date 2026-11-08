@@ -1,37 +1,69 @@
 package dev.nathanxu.dayplanner.domain
 
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
+import java.time.temporal.TemporalAdjusters
 import kotlin.math.roundToInt
 
+/** How a long-term task is broken into to-dos. */
+enum class Cadence(val label: String, val short: String) {
+    DAILY("Daily", "today"),
+    THREE_DAY("Every 3 days", "these 3 days"),
+    WEEKLY("Weekly", "this week"),
+    MONTHLY("Monthly", "this month"),
+    NONE("No breakdown", ""),
+}
+
 /**
- * Even pacing for count goals ("x5 @week"): by the end of day k of an n-day period you should
- * have done ceil(target * k / n). Missed days are absorbed into later quotas automatically.
+ * Even pacing over an inclusive [start, end] range: by the end of day k of n you should have
+ * done ceil(target·k/n). A breakdown bucket (today / these 3 days / this week / this month) asks
+ * for whatever gets you on pace by the bucket's last day, so missed work rolls into the next ask.
  */
 object Pacing {
-    fun totalDays(period: Period, start: LocalDate): Int =
-        ChronoUnit.DAYS.between(start, period.endAfter(start)).toInt()
+    fun totalDays(start: LocalDate, end: LocalDate): Int =
+        (ChronoUnit.DAYS.between(start, end) + 1).toInt().coerceAtLeast(1)
 
-    /** Days elapsed including [today], clamped to the period. */
-    fun elapsedDays(period: Period, start: LocalDate, today: LocalDate): Int =
-        (ChronoUnit.DAYS.between(start, today) + 1).toInt().coerceIn(0, totalDays(period, start))
+    /** Days elapsed from [start] up to and including [date], clamped to the range. */
+    fun elapsedDays(start: LocalDate, end: LocalDate, date: LocalDate): Int =
+        (ChronoUnit.DAYS.between(start, date) + 1).toInt().coerceIn(0, totalDays(start, end))
 
-    fun expectedBy(target: Int, period: Period, start: LocalDate, today: LocalDate): Int {
-        val n = totalDays(period, start)
-        val k = elapsedDays(period, start, today)
+    fun expectedBy(target: Int, start: LocalDate, end: LocalDate, date: LocalDate): Int {
+        val n = totalDays(start, end)
+        val k = elapsedDays(start, end, date)
         return (target * k + n - 1) / n // integer ceil
     }
 
-    /** Units to schedule for [today], given what was done before today. */
-    fun quotaToday(target: Int, period: Period, start: LocalDate, today: LocalDate, doneBeforeToday: Int): Int {
+    /** Last day of the breakdown bucket containing [today], clamped to [end]. */
+    fun bucketEnd(cadence: Cadence, start: LocalDate, end: LocalDate, today: LocalDate): LocalDate {
+        val raw = when (cadence) {
+            Cadence.DAILY -> today
+            Cadence.THREE_DAY -> {
+                val since = ChronoUnit.DAYS.between(start, today).coerceAtLeast(0)
+                start.plusDays((since / 3 + 1) * 3 - 1)
+            }
+            Cadence.WEEKLY -> today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
+            Cadence.MONTHLY -> today.withDayOfMonth(today.lengthOfMonth())
+            Cadence.NONE -> end
+        }
+        return if (raw.isAfter(end)) end else raw
+    }
+
+    /** Units to ask for in today's to-do. 0 outside the range or when already on pace. */
+    fun quotaToday(
+        target: Int, start: LocalDate, end: LocalDate, cadence: Cadence,
+        today: LocalDate, doneBeforeToday: Int,
+    ): Int {
+        if (today.isBefore(start) || today.isAfter(end)) return 0
         val remaining = (target - doneBeforeToday).coerceAtLeast(0)
-        return (expectedBy(target, period, start, today) - doneBeforeToday).coerceIn(0, remaining)
+        val due = expectedBy(target, start, end, bucketEnd(cadence, start, end, today))
+        return (due - doneBeforeToday).coerceIn(0, remaining)
     }
 }
 
 enum class GoalMode { COUNT, STEPS, SINGLE }
 
-/** Everything the UI needs to show a goal's percentage, pace and today's share. */
+/** Everything the UI needs to show a plan's percentage, pace and today's share. */
 data class GoalStatus(
     val mode: GoalMode,
     val done: Int,
@@ -53,12 +85,12 @@ data class GoalStatus(
          * ticked steps / steps. SINGLE: target 1 with no steps, done once anything is logged.
          */
         fun of(
-            target: Int, period: Period, start: LocalDate, today: LocalDate,
+            target: Int, start: LocalDate, end: LocalDate, today: LocalDate,
             doneUnits: Int, stepTotal: Int, stepDone: Int, todayUnits: Int, todayDoneUnits: Int,
         ): GoalStatus = when {
             target > 1 -> GoalStatus(
                 GoalMode.COUNT, doneUnits, target,
-                Pacing.expectedBy(target, period, start, today), todayUnits, todayDoneUnits,
+                Pacing.expectedBy(target, start, end, today), todayUnits, todayDoneUnits,
             )
             stepTotal > 0 -> GoalStatus(GoalMode.STEPS, stepDone, stepTotal, null, todayUnits, todayDoneUnits)
             else -> GoalStatus(GoalMode.SINGLE, doneUnits.coerceAtMost(1), 1, null, todayUnits, todayDoneUnits)

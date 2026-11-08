@@ -1,6 +1,12 @@
 package dev.nathanxu.dayplanner.ui
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -67,4 +73,45 @@ fun formatMinutes(m: Long): String = when {
     m < 60 -> "${m}m"
     m % 60 == 0L -> "${m / 60}h"
     else -> "${m / 60}h${m % 60}"
+}
+
+// ---------- tags ----------
+
+@androidx.compose.runtime.Composable
+fun TagDot(color: Int, size: androidx.compose.ui.unit.Dp = 10.dp) {
+    androidx.compose.foundation.layout.Box(
+        Modifier.size(size).background(androidx.compose.ui.graphics.Color(color), androidx.compose.foundation.shape.CircleShape),
+    )
+}
+
+/** Coloured dot + tag name, for list rows. */
+@androidx.compose.runtime.Composable
+fun TagLabel(tag: dev.nathanxu.dayplanner.domain.Tag) {
+    androidx.compose.foundation.layout.Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        TagDot(tag.color, 8.dp)
+        androidx.compose.foundation.layout.Spacer(Modifier.width(4.dp))
+        Text(tag.name, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** A row of palette swatches; the selected one is ringed. */
+@androidx.compose.runtime.Composable
+fun ColorPalette(selected: Int?, onPick: (Int) -> Unit) {
+    androidx.compose.foundation.layout.Row(
+        Modifier.horizontalScroll(androidx.compose.foundation.rememberScrollState()).padding(vertical = 4.dp),
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(6.dp),
+    ) {
+        dev.nathanxu.dayplanner.domain.Tags.PALETTE.forEach { c ->
+            androidx.compose.foundation.layout.Box(
+                Modifier.size(30.dp)
+                    .then(
+                        if (c == selected) Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, androidx.compose.foundation.shape.CircleShape)
+                        else Modifier
+                    )
+                    .padding(3.dp)
+                    .background(androidx.compose.ui.graphics.Color(c), androidx.compose.foundation.shape.CircleShape)
+                    .clickable { onPick(c) },
+            )
+        }
+    }
 }

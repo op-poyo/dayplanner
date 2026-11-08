@@ -37,6 +37,8 @@ data class CalInfo(
     val writable: Boolean,
     val primary: Boolean,
     val visible: Boolean,
+    /** False = the account has this calendar but isn't downloading its events to the phone. */
+    val syncEvents: Boolean,
 ) {
     val isGoogle: Boolean get() = accountType == GOOGLE
 
@@ -72,6 +74,7 @@ class CalendarSource(private val context: Context) {
             Calendars.IS_PRIMARY,
             Calendars.OWNER_ACCOUNT,
             Calendars.VISIBLE,
+            Calendars.SYNC_EVENTS,
         )
         val out = mutableListOf<CalInfo>()
         runCatching {
@@ -88,6 +91,7 @@ class CalendarSource(private val context: Context) {
                         writable = c.getInt(5) >= Calendars.CAL_ACCESS_CONTRIBUTOR,
                         primary = c.getInt(6) == 1 || owner == account,
                         visible = c.getInt(8) == 1,
+                        syncEvents = c.getInt(9) == 1,
                     )
                 }
             }
@@ -197,6 +201,23 @@ class CalendarSource(private val context: Context) {
                 null,
             )?.use { if (it.moveToFirst()) it.getLong(0) else null }
         }.getOrNull()
+    }
+
+    /**
+     * Turns on downloading of a calendar's events (and its visibility in calendar apps), e.g. a
+     * subscribed timetable that Google added with sync off. Returns false if Android refused.
+     */
+    suspend fun enableSync(cal: CalInfo): Boolean = withContext(Dispatchers.IO) {
+        if (!hasWritePermission()) return@withContext false
+        val ok = runCatching {
+            val values = ContentValues().apply {
+                put(Calendars.SYNC_EVENTS, 1)
+                put(Calendars.VISIBLE, 1)
+            }
+            context.contentResolver.update(ContentUris.withAppendedId(Calendars.CONTENT_URI, cal.id), values, null, null) > 0
+        }.onFailure { Log.w(TAG, "enableSync failed", it) }.getOrDefault(false)
+        if (ok) requestSync(cal.accountName, cal.accountType)
+        ok
     }
 
     /** Asks Android to sync this Google account's calendars now rather than whenever it gets round to it. */

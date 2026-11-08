@@ -50,6 +50,8 @@ import dev.nathanxu.dayplanner.calendar.CalendarSource
 import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.data.TodayPlan
+import dev.nathanxu.dayplanner.domain.Tag
+import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.TimelineItem
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -65,6 +67,7 @@ fun TodayScreen(
     upcoming: List<Task>,
     plan: TodayPlan?,
     goals: List<GoalProgress>,
+    tags: List<Tag>,
     loading: Boolean,
     onOpenGoals: () -> Unit,
     quickAddFocus: FocusRequester,
@@ -149,14 +152,15 @@ fun TodayScreen(
         // ---------- tasks ----------
         val goalsById = goals.associateBy { it.goal.id }
         val open = tasks.count { !it.done }
-        item { SectionHeader(if (tasks.isEmpty()) "Tasks" else "Tasks · $open left") }
+        item { SectionHeader(if (tasks.isEmpty()) "To-do" else "To-do · $open left") }
         if (tasks.isEmpty()) item {
-            Text("No tasks. Add one above, or set up routines.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Nothing to do. Add one above, or set up routines.", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         items(tasks, key = { it.id }) { task ->
             TaskRow(
                 task = task,
                 today = today,
+                tag = Tags.find(task.category, tags),
                 goal = task.goalId?.let { goalsById[it] },
                 onToggle = { onToggle(task) },
                 onEdit = { onEditTask(task) },
@@ -175,7 +179,9 @@ fun TodayScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text("${task.category.emoji} ${task.title}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    TagDot(Tags.find(task.category, tags).color, 8.dp)
+                    Spacer(Modifier.width(6.dp))
+                    Text(task.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
             }
         }
@@ -277,6 +283,7 @@ private fun GoalGlance(gp: GoalProgress, onClick: () -> Unit) {
 private fun TaskRow(
     task: Task,
     today: LocalDate,
+    tag: Tag,
     goal: GoalProgress?,
     onToggle: () -> Unit,
     onEdit: () -> Unit,
@@ -289,14 +296,14 @@ private fun TaskRow(
         Checkbox(checked = task.done, onCheckedChange = { onToggle() })
         Column(Modifier.weight(1f)) {
             Text(
-                task.title,
+                task.title + if (task.units > 1) " ×${task.units}" else "",
                 textDecoration = if (task.done) TextDecoration.LineThrough else null,
                 color = if (task.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
             val meta = buildList {
                 task.time?.let { add(it.format(hm)) }
-                add("${task.category.emoji} ${task.category.label}")
+                add(tag.name)
                 task.minutes?.let { add(formatMinutes(it.toLong())) }
                 goal?.let { add("→ ${it.goal.title} ${it.status.percent}%") }
                 when {
@@ -305,10 +312,14 @@ private fun TaskRow(
                 }
                 if (task.routineId != null) add("↻")
             }.joinToString(" · ")
-            Text(
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TagDot(tag.color, 8.dp)
+                Spacer(Modifier.width(4.dp))
+                Text(
                 meta, style = MaterialTheme.typography.bodySmall,
                 color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+                )
+            }
         }
         if (!task.done) {
             IconButton(onClick = onBlock) { Icon(Icons.Default.DateRange, contentDescription = "Block time in calendar") }
@@ -319,18 +330,21 @@ private fun TaskRow(
     }
 }
 
+/** Quick-add syntax reference; also shown in Settings. */
+val SYNTAX_ROWS = listOf(
+    "fri / tmr / someday" to "date (default today; a weekday means the next one)",
+    "18:30 / 6pm" to "time",
+    "45m / 1h30" to "duration",
+    "#study #gym #piano" to "tag (a new name creates a new tag)",
+    "^leetcode" to "counts towards a long-term task",
+    "@week / @month" to "make it a long-term task for this week/month",
+    "x5" to "how many times in total",
+    "!r" to "repeat when it ends",
+)
+
 @Composable
-private fun SyntaxCard() {
-    val rows = listOf(
-        "fri / tmr / someday" to "date (default today)",
-        "18:30 / 6pm" to "time",
-        "#study #run #cook #shop #proj #quant" to "category",
-        "45m / 1h30" to "duration",
-        "^leetcode" to "count towards a goal",
-        "@week / @month" to "make it a goal",
-        "x5" to "goal target",
-        "!r" to "goal repeats every period",
-    )
+fun SyntaxCard() {
+    val rows = SYNTAX_ROWS
     Card(
         Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),

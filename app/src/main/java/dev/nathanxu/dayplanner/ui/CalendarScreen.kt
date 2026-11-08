@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -55,6 +56,8 @@ import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.domain.CalendarLayout
 import dev.nathanxu.dayplanner.domain.CalendarMode
 import dev.nathanxu.dayplanner.domain.DaySegment
+import dev.nathanxu.dayplanner.domain.Tag
+import dev.nathanxu.dayplanner.domain.Tags
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.YearMonth
@@ -73,6 +76,7 @@ fun CalendarScreen(
     today: LocalDate,
     events: Map<LocalDate, List<DaySegment>>,
     tasks: List<Task>,
+    tags: List<Tag>,
     onMode: (CalendarMode) -> Unit,
     onStep: (Boolean) -> Unit,
     onToday: () -> Unit,
@@ -85,6 +89,7 @@ fun CalendarScreen(
 ) {
     val ctx = LocalContext.current
     val tasksByDay = tasks.filter { it.date != null }.groupBy { it.date!! }
+    val tagColor: (Task) -> Int = { Tags.find(it.category, tags).color }
     val openEvent: (DaySegment) -> Unit = { seg ->
         ctx.safeStart { startActivity(CalendarSource.viewEventIntent(seg.event.id, seg.event.start, seg.event.end)) }
     }
@@ -112,10 +117,10 @@ fun CalendarScreen(
         HorizontalDivider()
 
         when (view.mode) {
-            CalendarMode.SCHEDULE -> ScheduleList(view, today, events, tasksByDay, openEvent, onToggleTask, onEditTask, onLoadMore)
+            CalendarMode.SCHEDULE -> ScheduleList(view, today, events, tasksByDay, tagColor, openEvent, onToggleTask, onEditTask, onLoadMore)
             CalendarMode.THREE_DAY, CalendarMode.WEEK ->
                 TimeGrid(CalendarLayout.gridDays(view.mode, view.anchor), today, events, openEvent, onOpenDay)
-            CalendarMode.MONTH -> MonthView(view, today, events, tasksByDay, onSelectDay, onOpenDay, openEvent, onToggleTask, onEditTask)
+            CalendarMode.MONTH -> MonthView(view, today, events, tasksByDay, tagColor, onSelectDay, onOpenDay, openEvent, onToggleTask, onEditTask)
         }
     }
 }
@@ -135,6 +140,7 @@ private fun ScheduleList(
     today: LocalDate,
     events: Map<LocalDate, List<DaySegment>>,
     tasksByDay: Map<LocalDate, List<Task>>,
+    tagColor: (Task) -> Int,
     onEvent: (DaySegment) -> Unit,
     onToggleTask: (Task) -> Unit,
     onEditTask: (Task) -> Unit,
@@ -148,8 +154,13 @@ private fun ScheduleList(
                     d.format(dayHeader) + if (d == today) " · Today" else "",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
-                    color = if (d == today) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.padding(top = 16.dp, bottom = 4.dp),
+                    color = if (d == today) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp, bottom = 4.dp)
+                        .background(
+                            if (d == today) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                            RoundedCornerShape(8.dp),
+                        )
+                        .padding(horizontal = if (d == today) 8.dp else 0.dp, vertical = 4.dp),
                 )
             }
             val segs = events[d].orEmpty()
@@ -160,7 +171,7 @@ private fun ScheduleList(
                 }
             }
             items(segs, key = { "s$d-${it.event.id}-${it.event.start}" }) { seg -> EventLine(seg, onEvent) }
-            items(dayTasks, key = { "t${it.id}" }) { t -> TaskLine(t, onToggleTask, onEditTask) }
+            items(dayTasks, key = { "t${it.id}" }) { t -> TaskLine(t, tagColor(t), onToggleTask, onEditTask) }
         }
         item(key = "more") {
             OutlinedButton(onClick = onLoadMore, modifier = Modifier.fillMaxWidth().padding(top = 16.dp)) {
@@ -199,11 +210,13 @@ private fun EventLine(seg: DaySegment, onClick: (DaySegment) -> Unit) {
 }
 
 @Composable
-private fun TaskLine(t: Task, onToggle: (Task) -> Unit, onEdit: (Task) -> Unit) {
+private fun TaskLine(t: Task, color: Int, onToggle: (Task) -> Unit, onEdit: (Task) -> Unit) {
     Row(Modifier.fillMaxWidth().clickable { onEdit(t) }, verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = t.done, onCheckedChange = { onToggle(t) }, modifier = Modifier.size(40.dp))
+        TagDot(color, 8.dp)
+        Spacer(Modifier.width(6.dp))
         Text(
-            (t.time?.let { it.format(hm) + "  " } ?: "") + "${t.category.emoji} ${t.title}",
+            (t.time?.let { it.format(hm) + "  " } ?: "") + t.title + if (t.units > 1) " ×${t.units}" else "",
             maxLines = 1, overflow = TextOverflow.Ellipsis,
             textDecoration = if (t.done) TextDecoration.LineThrough else null,
             color = if (t.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
@@ -222,6 +235,7 @@ private fun TimeGrid(
     onDay: (LocalDate) -> Unit,
 ) {
     val lineColor = MaterialTheme.colorScheme.outlineVariant
+    val todayTint = MaterialTheme.colorScheme.primary.copy(alpha = 0.07f)
     val nowColor = MaterialTheme.colorScheme.error
     val density = LocalDensity.current
     val scroll = rememberScrollState()
@@ -231,7 +245,12 @@ private fun TimeGrid(
         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
             Spacer(Modifier.width(GUTTER))
             days.forEach { d ->
-                Column(Modifier.weight(1f).clickable { onDay(d) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    Modifier.weight(1f)
+                        .background(if (d == today) todayTint else Color.Transparent, RoundedCornerShape(6.dp))
+                        .clickable { onDay(d) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
                     Text(d.dayOfWeek.name.take(3).lowercase().replaceFirstChar(Char::uppercase), style = MaterialTheme.typography.labelSmall)
                     Box(
                         Modifier.size(28.dp).background(
@@ -280,7 +299,9 @@ private fun TimeGrid(
             }
             days.forEach { d ->
                 BoxWithConstraints(
-                    Modifier.weight(1f).height(HOUR * 24).drawBehind {
+                    Modifier.weight(1f).height(HOUR * 24)
+                        .background(if (d == today) todayTint else Color.Transparent)
+                        .drawBehind {
                         val hourPx = HOUR.toPx()
                         drawLine(lineColor, Offset(0f, 0f), Offset(0f, size.height), 1f)
                         for (h in 1 until 24) {
@@ -329,6 +350,7 @@ private fun MonthView(
     today: LocalDate,
     events: Map<LocalDate, List<DaySegment>>,
     tasksByDay: Map<LocalDate, List<Task>>,
+    tagColor: (Task) -> Int,
     onSelect: (LocalDate) -> Unit,
     onOpenDay: (LocalDate) -> Unit,
     onEvent: (DaySegment) -> Unit,
@@ -353,6 +375,11 @@ private fun MonthView(
                         Modifier.weight(1f).height(64.dp).padding(1.dp)
                             .background(
                                 if (d == view.selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent,
+                                RoundedCornerShape(6.dp),
+                            )
+                            .border(
+                                if (d == today) 2.dp else 0.dp,
+                                if (d == today) MaterialTheme.colorScheme.primary else Color.Transparent,
                                 RoundedCornerShape(6.dp),
                             )
                             .clickable { onSelect(d) }
@@ -398,7 +425,7 @@ private fun MonthView(
                 Text("Nothing planned", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
             }
             segs.forEach { EventLine(it, onEvent) }
-            dayTasks.forEach { TaskLine(it, onToggleTask, onEditTask) }
+            dayTasks.forEach { TaskLine(it, tagColor(it), onToggleTask, onEditTask) }
             Spacer(Modifier.height(24.dp))
         }
     }

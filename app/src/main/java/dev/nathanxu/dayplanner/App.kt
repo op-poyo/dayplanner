@@ -8,6 +8,7 @@ import dev.nathanxu.dayplanner.calendar.CalendarSource
 import dev.nathanxu.dayplanner.data.AppDatabase
 import dev.nathanxu.dayplanner.data.Repository
 import dev.nathanxu.dayplanner.data.Settings
+import dev.nathanxu.dayplanner.data.TagStore
 import dev.nathanxu.dayplanner.travel.TravelService
 import java.security.MessageDigest
 
@@ -24,6 +25,7 @@ class App : Application() {
             calendar = CalendarSource(this),
             travel = TravelService(db.travel(), BuildConfig.MAPS_API_KEY, packageName, signingSha1()),
             settings = Settings(this),
+            tags = TagStore(this),
         )
     }
 
