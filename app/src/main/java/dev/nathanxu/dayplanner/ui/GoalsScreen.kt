@@ -52,6 +52,8 @@ class GoalActions(
     val onDelete: (Goal) -> Unit,
     val onAddStep: (Goal, String) -> Unit,
     val onToggleStep: (Task) -> Unit,
+    val onEdit: (Goal) -> Unit,
+    val onEditStep: (Task) -> Unit,
 )
 
 @Composable
@@ -118,7 +120,7 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, a: GoalActions) {
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 4.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(Modifier.clickable { a.onEdit(g) }, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(
                         "${g.category.emoji} ${g.title}",
@@ -152,7 +154,7 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, a: GoalActions) {
 
             AnimatedVisibility(showSteps) {
                 Column(Modifier.padding(top = 6.dp)) {
-                    gp.steps.forEach { StepRow(it, today) { a.onToggleStep(it) } }
+                    gp.steps.forEach { step -> StepRow(step, today, { a.onToggleStep(step) }, { a.onEditStep(step) }) }
                     QuickAddBar(
                         placeholder = "Add step, e.g. Draft intro tue",
                         onSubmit = { a.onAddStep(g, it) },
@@ -212,9 +214,9 @@ private fun paceLine(s: GoalStatus, g: Goal): Pair<String, Boolean>? {
 }
 
 @Composable
-private fun StepRow(task: Task, today: LocalDate, onToggle: () -> Unit) {
+private fun StepRow(task: Task, today: LocalDate, onToggle: () -> Unit, onEdit: () -> Unit) {
     val overdue = !task.done && task.date != null && task.date.isBefore(today)
-    Row(Modifier.fillMaxWidth().clickable(onClick = onToggle), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onEdit), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = task.done, onCheckedChange = { onToggle() }, modifier = Modifier.size(36.dp))
         Text(
             task.title,

@@ -100,7 +100,17 @@ Self-review of v1.1:
 - Calendar choice is automatic (Google primary). If you have several Google accounts it may pick the wrong one; a picker belongs in the settings screen.
 - Still uncompiled on Android (no SDK here). Domain logic: 24/24 tests pass.
 
-## 10. Roadmap
+## 10. v1.2 changes (from first real use)
+
+Ordered by importance:
+1. **Routine sync fix.** Likely cause: several Google accounts on the phone and the app silently picked one. Now the account and calendar are explicit, sync errors are shown instead of swallowed, Android is asked to sync immediately after each write, and routine events follow you if you change calendar.
+2. **Account / calendar picker** (Settings). Reads and writes are scoped to the chosen account.
+3. **Editing** for tasks, goals, steps and routines.
+4. **Scrolling schedule** across days and weeks.
+5. **Calendar tab** with 3-day, week and month views. Layout logic (multi-day splitting, overlap lanes, month grid) is pure Kotlin with tests.
+- Fixed signing key so updates install over the top (one last uninstall needed when moving from v1.1).
+
+## 11. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

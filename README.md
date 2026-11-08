@@ -1,4 +1,4 @@
-# DayPlanner v1.1
+# DayPlanner v1.2
 
 Personal Android planner: Google Calendar timeline with travel times, daily tasks, weekly/monthly goals, routines, and a home-screen widget. Local-first, no server. See `PLAN.md` for the design and its self-review.
 
@@ -48,6 +48,23 @@ One box adds everything:
 - Pause a routine, turn its 📅 off, or delete it, and the event is removed. If you delete the event in Google Calendar yourself, the app stops syncing that routine instead of re-creating it.
 - The app is the source of truth: edits made to the event in Google Calendar aren't read back.
 
+### Settings ⚙ (top right)
+
+- **Google account**: only this account's calendars are shown, and routines go into it. Pick it first if you have several accounts.
+- **Calendar for routines**: switching moves existing routine events across.
+- **Routine sync** status, and a *Sync routines now* button. If routines still don't show on the web, check Android Settings → Accounts → Google → Calendar sync is on.
+
+### Calendar tab
+
+- **Schedule**: scroll day by day through the next 4 weeks (tap *Show 4 more weeks* to keep going). Events and dated tasks per day.
+- **3 day / Week**: hour grid; overlapping events sit side by side; red line = now. Tap a day header to jump to it.
+- **Month**: grid with event titles and open-task counts; tap a day for its details, *Day view* opens it in the 3-day view.
+- ‹ › move by week / 3 days / month; *Today* jumps back. Tap an event to open it in Google Calendar.
+
+### Editing
+
+Tap anything to edit it: tasks (title, date, time, duration, category, goal), goal cards (title, target, category, repeat, daily split), steps, and routines (title, days, time, duration, sync, active). Editing a routine updates its Google Calendar event.
+
 ### Rollover
 
 - Tasks you typed roll over and show as overdue.
@@ -59,7 +76,7 @@ One box adds everything:
 ```
 ./gradlew test
 ```
-24 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, periods and weekday masks.
+33 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), periods and weekday masks.
 
 ## Project layout
 

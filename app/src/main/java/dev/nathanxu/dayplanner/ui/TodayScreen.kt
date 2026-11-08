@@ -71,7 +71,9 @@ fun TodayScreen(
     onQuickAdd: (String) -> Unit,
     onToggle: (Task) -> Unit,
     onDelete: (Task) -> Unit,
+    onEditTask: (Task) -> Unit,
     onConnectCalendar: () -> Unit,
+    onOpenSettings: () -> Unit,
     contentPadding: PaddingValues,
 ) {
     val ctx = LocalContext.current
@@ -97,6 +99,18 @@ fun TodayScreen(
         }
 
         // ---------- schedule ----------
+        if (plan?.needsAccountChoice == true) item {
+            Card(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("You have more than one Google account. Pick the one this app should use.")
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onOpenSettings) { Text("Choose account") }
+                }
+            }
+        }
         item { SectionHeader("Schedule") }
         if (loading && plan == null) item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
         when {
@@ -145,6 +159,7 @@ fun TodayScreen(
                 today = today,
                 goal = task.goalId?.let { goalsById[it] },
                 onToggle = { onToggle(task) },
+                onEdit = { onEditTask(task) },
                 onDelete = { onDelete(task) },
                 onBlock = { ctx.blockTime(task, plan) },
             )
@@ -153,7 +168,7 @@ fun TodayScreen(
         if (upcoming.isNotEmpty()) {
             item { SectionHeader("Upcoming") }
             items(upcoming.take(15), key = { "u${it.id}" }) { task ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
+                Row(Modifier.fillMaxWidth().clickable { onEditTask(task) }.padding(vertical = 6.dp)) {
                     Text(
                         task.date?.format(dayFmt) ?: "",
                         modifier = Modifier.width(92.dp),
@@ -264,11 +279,13 @@ private fun TaskRow(
     today: LocalDate,
     goal: GoalProgress?,
     onToggle: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
     onBlock: () -> Unit,
 ) {
     val overdue = !task.done && task.date != null && task.date.isBefore(today)
-    Row(Modifier.fillMaxWidth().clickable(onClick = onToggle), verticalAlignment = Alignment.CenterVertically) {
+    // Tap the row to edit; the checkbox ticks.
+    Row(Modifier.fillMaxWidth().clickable(onClick = onEdit), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = task.done, onCheckedChange = { onToggle() })
         Column(Modifier.weight(1f)) {
             Text(

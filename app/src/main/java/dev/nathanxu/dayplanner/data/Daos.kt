@@ -33,10 +33,24 @@ interface TaskDao {
     @Query("SELECT * FROM tasks WHERE goalId IS NOT NULL AND genKey IS NULL ORDER BY done ASC, date ASC, id ASC")
     fun observeSteps(): Flow<List<Task>>
 
+    /** Dated tasks in [start, endExclusive), for the Calendar page. */
+    @Query(
+        """
+        SELECT * FROM tasks WHERE date >= :start AND date < :endExclusive
+        ORDER BY date ASC, CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC, id ASC
+        """
+    )
+    fun observeBetween(start: LocalDate, endExclusive: LocalDate): Flow<List<Task>>
+
     @Insert suspend fun insert(task: Task): Long
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertIgnore(task: Task): Long
+
+    @Update suspend fun update(task: Task)
+
+    @Query("DELETE FROM tasks WHERE genKey = :key AND done = 0")
+    suspend fun deleteOpenByKey(key: String)
 
     @Query("UPDATE tasks SET done = :done, doneAt = :at WHERE id = :id")
     suspend fun setDone(id: Long, done: Boolean, at: Long?)

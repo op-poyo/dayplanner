@@ -26,6 +26,17 @@ android {
         buildConfigField("String", "MAPS_API_KEY", "\"${localProps.getProperty("MAPS_API_KEY", "")}\"")
     }
 
+    // One fixed key for every build (local and CI) so new APKs install over old ones and keep
+    // your data. It's a throwaway debug key for a personal sideloaded app — not a Play Store key.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("dayplanner-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

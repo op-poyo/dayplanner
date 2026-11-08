@@ -3,6 +3,7 @@ package dev.nathanxu.dayplanner.data
 import android.content.Context
 import android.util.Log
 import androidx.glance.appwidget.updateAll
+import dev.nathanxu.dayplanner.calendar.CalInfo
 import dev.nathanxu.dayplanner.calendar.CalendarSource
 import dev.nathanxu.dayplanner.domain.CalEvent
 import dev.nathanxu.dayplanner.domain.Category
@@ -18,6 +19,9 @@ import dev.nathanxu.dayplanner.domain.later
 import dev.nathanxu.dayplanner.travel.TravelService
 import dev.nathanxu.dayplanner.widget.TodayWidget
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -35,23 +39,34 @@ data class TodayPlan(
     val calendarConnected: Boolean,
     val travelEnabled: Boolean,
     val nextEvent: CalEvent?,
+    /** Set when several Google accounts exist and none has been chosen. */
+    val needsAccountChoice: Boolean = false,
 )
+
+/** Result of the last routine → calendar sync, shown on the Routines and Settings screens. */
+data class SyncStatus(val ok: Boolean, val message: String, val at: LocalDateTime = LocalDateTime.now())
 
 class Repository(
     private val context: Context,
     private val db: AppDatabase,
     val calendar: CalendarSource,
     private val travel: TravelService,
+    val settings: Settings,
 ) {
     private val dayFmt = DateTimeFormatter.ofPattern("EEE d MMM")
     private val hm = DateTimeFormatter.ofPattern("HH:mm")
     /** ensureFor / syncRoutines can be triggered by the app and the widget at once. */
     private val housekeeping = Mutex()
 
+    private val _syncStatus = MutableStateFlow<SyncStatus?>(null)
+    val syncStatus: StateFlow<SyncStatus?> = _syncStatus.asStateFlow()
+
     // ---------- observe ----------
 
     fun observeToday(today: LocalDate): Flow<List<Task>> = db.tasks().observeToday(today)
     fun observeUpcoming(today: LocalDate): Flow<List<Task>> = db.tasks().observeUpcoming(today)
+    fun observeBetween(start: LocalDate, endExclusive: LocalDate): Flow<List<Task>> =
+        db.tasks().observeBetween(start, endExclusive)
     fun observeRoutines(): Flow<List<Routine>> = db.routines().observeAll()
 
     /** Goals whose period contains [today], with % / pace / today's share and their steps. */
@@ -77,6 +92,58 @@ class Repository(
     }
 
     suspend fun todayTasks(today: LocalDate): List<Task> = db.tasks().today(today)
+
+    // ---------- account / calendars ----------
+
+    suspend fun calendars(): List<CalInfo> = calendar.calendars()
+
+    fun googleAccounts(cals: List<CalInfo>): List<String> =
+        cals.filter { it.isGoogle }.map { it.accountName }.distinct()
+
+    /**
+     * Calendars to read: every visible calendar of the chosen account. With no account chosen and
+     * a single Google account, that account is chosen automatically; with several, everything is
+     * shown until you pick (and routine sync waits for the pick).
+     */
+    private suspend fun readCalendarIds(): Set<Long>? {
+        val cals = calendar.calendars()
+        val account = settings.current.accountName ?: autoPickAccount(cals) ?: return null
+        return cals.filter { it.accountName == account && it.visible }.map { it.id }.toSet()
+    }
+
+    private fun autoPickAccount(cals: List<CalInfo>): String? {
+        val accounts = googleAccounts(cals)
+        if (accounts.size != 1) return null
+        settings.update { it.copy(accountName = accounts.single()) }
+        return accounts.single()
+    }
+
+    fun chooseAccount(accountName: String) {
+        settings.update { SettingsState(accountName = accountName, routineCalendarId = null) }
+    }
+
+    fun chooseRoutineCalendar(calendarId: Long) {
+        settings.update { it.copy(routineCalendarId = calendarId) }
+    }
+
+    /** The calendar routines go into, or an explanation of why there isn't one. */
+    private fun routineCalendar(cals: List<CalInfo>): Result<CalInfo> {
+        val account = settings.current.accountName ?: autoPickAccount(cals)
+        if (account == null) {
+            return Result.failure(
+                IllegalStateException(
+                    if (googleAccounts(cals).isEmpty()) "No Google account calendars on this phone"
+                    else "Choose which Google account to use in Settings ⚙"
+                )
+            )
+        }
+        val inAccount = cals.filter { it.accountName == account && it.writable }
+        val pick = inAccount.firstOrNull { it.id == settings.current.routineCalendarId }
+            ?: inAccount.firstOrNull { it.primary }
+            ?: inAccount.firstOrNull()
+        return pick?.let { Result.success(it) }
+            ?: Result.failure(IllegalStateException("No writable calendar in $account"))
+    }
 
     // ---------- daily housekeeping ----------
 
@@ -180,6 +247,11 @@ class Repository(
         refreshWidget()
     }
 
+    suspend fun updateTask(task: Task) {
+        db.tasks().update(task)
+        refreshWidget()
+    }
+
     suspend fun setDone(id: Long, done: Boolean) {
         db.tasks().setDone(id, done, if (done) System.currentTimeMillis() else null)
         refreshWidget()
@@ -208,13 +280,20 @@ class Repository(
         refreshWidget()
     }
 
-    suspend fun setRecurring(goal: Goal, recurring: Boolean) = db.goals().update(goal.copy(recurring = recurring))
-
-    suspend fun setSplit(goal: Goal, split: Boolean, today: LocalDate) {
-        db.goals().update(goal.copy(split = split))
-        if (split) ensureFor(today) else db.tasks().deleteOpenSplits(goal.id)
+    /** Saves an edited goal; today's split is recalculated if the target or split setting changed. */
+    suspend fun updateGoal(goal: Goal, today: LocalDate) {
+        val old = db.goals().get(goal.id)
+        db.goals().update(goal.copy(target = goal.target.coerceAtLeast(1)))
+        if (old == null || old.target != goal.target || old.split != goal.split || old.title != goal.title) {
+            db.tasks().deleteOpenSplits(goal.id)
+            ensureFor(today)
+        }
         refreshWidget()
     }
+
+    suspend fun setRecurring(goal: Goal, recurring: Boolean) = db.goals().update(goal.copy(recurring = recurring))
+
+    suspend fun setSplit(goal: Goal, split: Boolean, today: LocalDate) = updateGoal(goal.copy(split = split), today)
 
     suspend fun deleteGoal(goal: Goal) {
         db.tasks().deleteOpenSplits(goal.id)
@@ -234,15 +313,37 @@ class Repository(
             )
         )
         ensureFor(today)
-        val syncMsg = syncRoutines()
+        val status = syncRoutines()
         refreshWidget()
         val base = "Routine added: ${p.title} · ${Days.describe(daysMask)}" + (p.time?.let { " ${hm.format(it)}" } ?: "")
         return when {
             !sync -> base
             p.time == null -> "$base. Add a time (e.g. 18:30) to put it in Google Calendar"
-            syncMsg != null -> "$base. $syncMsg"
-            else -> "$base · in Google Calendar"
+            !status.ok -> "$base. ${status.message}"
+            else -> "$base · added to Google Calendar"
         }
+    }
+
+    /**
+     * Saves an edited routine. If anything that appears in the calendar changed, the old event is
+     * dropped and recreated; today's unticked to-do is regenerated to match.
+     */
+    suspend fun updateRoutine(r: Routine, today: LocalDate): String {
+        if (r.daysMask == 0) return "Pick at least one day"
+        val old = db.routines().all().firstOrNull { it.id == r.id } ?: return "Routine not found"
+        val calendarChanged = old.title != r.title || old.daysMask != r.daysMask ||
+            old.time != r.time || old.minutes != r.minutes
+        var next = r
+        if (calendarChanged && old.calendarEventId != null) {
+            calendar.deleteEvent(old.calendarEventId)
+            next = next.copy(calendarEventId = null)
+        }
+        db.routines().update(next)
+        db.tasks().deleteOpenByKey(GenKeys.routine(r.id, today))
+        ensureFor(today)
+        val status = syncRoutines()
+        refreshWidget()
+        return if (status.ok) "Saved “${r.title}”" else "Saved. ${status.message}"
     }
 
     suspend fun setRoutineActive(r: Routine, active: Boolean) {
@@ -254,58 +355,92 @@ class Repository(
 
     suspend fun setRoutineSync(r: Routine, sync: Boolean): String? {
         db.routines().update(r.copy(syncToCalendar = sync))
-        return when {
-            sync && r.time == null -> "Give “${r.title}” a time to sync it — delete and re-add with e.g. 18:30"
-            else -> syncRoutines()
-        }
+        if (sync && r.time == null) return "Give “${r.title}” a time to sync it — tap it to edit"
+        val status = syncRoutines()
+        return if (status.ok) null else status.message
     }
 
     suspend fun deleteRoutine(r: Routine) {
         r.calendarEventId?.let { calendar.deleteEvent(it) }
         db.routines().delete(r)
+        settings.current.accountName?.let { calendar.requestSync(it) }
     }
 
     /**
-     * Makes Google Calendar match the routines: creates a weekly recurring event for each active,
-     * timed routine that wants syncing, and removes events for ones that don't. If you delete a
-     * routine's event in Google Calendar, syncing is switched off rather than fighting you.
-     * Returns a problem description, or null if all is well.
+     * Makes Google Calendar match the routines: each active, timed routine that wants syncing gets
+     * one weekly recurring event in the chosen calendar; events for routines that don't (or that
+     * sit in a different calendar after you switch) are removed. If you delete a routine's event
+     * in Google Calendar yourself, syncing is switched off for it rather than fighting you.
      */
-    suspend fun syncRoutines(): String? = housekeeping.withLock {
+    suspend fun syncRoutines(): SyncStatus = housekeeping.withLock {
         val routines = db.routines().all()
-        val wantsAny = routines.any { it.active && it.syncToCalendar && it.time != null }
-        if (!calendar.hasWritePermission()) {
-            return@withLock if (wantsAny) "Allow calendar access to sync routines" else null
-        }
-        var calendarId: Long? = null
-        var problem: String? = null
+        val wanted = { r: Routine -> r.active && r.syncToCalendar && r.time != null && r.daysMask != 0 }
 
+        if (routines.none { wanted(it) || it.calendarEventId != null }) {
+            return@withLock SyncStatus(true, "No routines to sync").also { _syncStatus.value = it }
+        }
+        if (!calendar.hasWritePermission()) {
+            return@withLock SyncStatus(false, "Allow calendar access to sync routines").also { _syncStatus.value = it }
+        }
+        val cals = calendar.calendars()
+        val target = routineCalendar(cals).getOrElse { e ->
+            return@withLock SyncStatus(false, e.message ?: "No calendar").also { _syncStatus.value = it }
+        }
+
+        val errors = mutableListOf<String>()
+        var synced = 0
+        var changed = false
         for (r in routines) {
-            val eventId = r.calendarEventId
-            if (eventId != null && calendar.eventExists(eventId) == false) {
-                db.routines().update(r.copy(calendarEventId = null, syncToCalendar = false))
-                continue
-            }
-            val wanted = r.active && r.syncToCalendar && r.time != null && r.daysMask != 0
-            when {
-                wanted && eventId == null -> {
-                    val calId = calendarId ?: calendar.writableCalendarId().also { calendarId = it }
-                    if (calId == null) {
-                        problem = "No writable Google calendar on this phone"
+            var eventId = r.calendarEventId
+            if (eventId != null) {
+                val inCalendar = calendar.eventCalendar(eventId)
+                when {
+                    inCalendar == null && wanted(r) -> {
+                        // You deleted it in Google Calendar: respect that.
+                        db.routines().update(r.copy(calendarEventId = null, syncToCalendar = false))
                         continue
                     }
-                    val first = firstOccurrence(r.daysMask, LocalDate.now())
-                    val id = calendar.createRecurring(calId, r.title, r.daysMask, r.time!!, r.minutes ?: 30, first)
-                    if (id != null) db.routines().update(r.copy(calendarEventId = id))
-                    else problem = "Couldn't create calendar event for “${r.title}”"
-                }
-                !wanted && eventId != null -> {
-                    calendar.deleteEvent(eventId)
-                    db.routines().update(r.copy(calendarEventId = null))
+                    inCalendar == null -> {
+                        db.routines().update(r.copy(calendarEventId = null))
+                        continue
+                    }
+                    !wanted(r) || inCalendar != target.id -> {
+                        calendar.deleteEvent(eventId)
+                        db.routines().update(r.copy(calendarEventId = null))
+                        eventId = null
+                        changed = true
+                    }
                 }
             }
+            if (!wanted(r)) continue
+            if (eventId != null) {
+                synced++
+                continue
+            }
+            runCatching {
+                calendar.createRecurring(
+                    target.id, r.title, r.daysMask, r.time!!, r.minutes ?: 30,
+                    firstOccurrence(r.daysMask, LocalDate.now()),
+                )
+            }.onSuccess { id ->
+                db.routines().update(r.copy(calendarEventId = id))
+                synced++
+                changed = true
+            }.onFailure { e ->
+                Log.w("Repository", "Routine sync failed for ${r.title}", e)
+                errors += "“${r.title}”: ${e.message ?: e.javaClass.simpleName}"
+            }
         }
-        problem
+        if (changed) calendar.requestSync(target.accountName, target.accountType)
+
+        val where = "“${target.name}” (${target.accountName})"
+        val status = if (errors.isEmpty()) {
+            SyncStatus(true, "$synced routine${if (synced == 1) "" else "s"} in $where")
+        } else {
+            SyncStatus(false, "Couldn't sync ${errors.joinToString("; ")}")
+        }
+        _syncStatus.value = status
+        status
     }
 
     private fun firstOccurrence(mask: Int, from: LocalDate): LocalDate =
@@ -315,18 +450,23 @@ class Repository(
 
     // ---------- calendar + travel ----------
 
+    suspend fun eventsBetween(start: LocalDate, endExclusive: LocalDate): List<CalEvent> =
+        calendar.eventsBetween(start, endExclusive, readCalendarIds())
+
     suspend fun todayPlan(now: LocalDateTime = LocalDateTime.now()): TodayPlan {
         val today = now.toLocalDate()
         if (!calendar.hasPermission()) return TodayPlan(emptyList(), false, travel.enabled, null)
 
-        val events = calendar.eventsOn(today)
+        val cals = calendar.calendars()
+        val needsChoice = settings.current.accountName == null && googleAccounts(cals).size > 1
+        val events = calendar.eventsOn(today, readCalendarIds())
         val minutes = DayPlan.travelLegs(events).associateWith { (a, b) -> travel.minutes(a, b) }
 
         val windowStart = later(now.withSecond(0).withNano(0), today.atTime(LocalTime.of(7, 0)))
         val windowEnd = later(windowStart, today.atTime(LocalTime.of(23, 0)))
         val items = DayPlan.buildTimeline(events, { a, b -> minutes[a to b] }, windowStart, windowEnd)
         val next = events.filter { !it.allDay && it.end.isAfter(now) }.minByOrNull { it.start }
-        return TodayPlan(items, true, travel.enabled, next)
+        return TodayPlan(items, true, travel.enabled, next, needsChoice)
     }
 
     suspend fun refreshWidget() {

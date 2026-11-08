@@ -54,7 +54,7 @@ class TodayWidget : GlanceAppWidget() {
         val today = LocalDate.now()
         repo.ensureFor(today)
         val now = LocalDateTime.now()
-        val next = repo.calendar.eventsOn(today)
+        val next = repo.eventsBetween(today, today.plusDays(1))
             .filter { !it.allDay && it.end.isAfter(now) }
             .minByOrNull { it.start }
 

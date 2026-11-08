@@ -33,7 +33,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.clickable
 import dev.nathanxu.dayplanner.data.Routine
+import dev.nathanxu.dayplanner.data.SyncStatus
 import dev.nathanxu.dayplanner.domain.Days
 import java.time.DayOfWeek
 import java.time.format.DateTimeFormatter
@@ -49,6 +51,9 @@ fun RoutinesScreen(
     onSetActive: (Routine, Boolean) -> Unit,
     onSetSync: (Routine, Boolean) -> Unit,
     onDelete: (Routine) -> Unit,
+    onEdit: (Routine) -> Unit,
+    syncStatus: SyncStatus?,
+    onOpenSettings: () -> Unit,
     contentPadding: PaddingValues,
 ) {
     var mask by rememberSaveable { mutableIntStateOf(Days.WEEKDAYS) }
@@ -118,13 +123,27 @@ fun RoutinesScreen(
             )
         }
         item { SectionHeader("Your routines") }
+        if (syncStatus != null && routines.isNotEmpty()) item {
+            Row(
+                Modifier.fillMaxWidth().clickable(onClick = onOpenSettings).padding(bottom = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    (if (syncStatus.ok) "✓ " else "⚠ ") + syncStatus.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (syncStatus.ok) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    modifier = Modifier.weight(1f),
+                )
+                Text("Settings ›", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
         if (routines.isEmpty()) item {
             Text(
                 "None yet. Ideas: “Lecture review 19:00 30m #study”, “Zetamac 8:30 10m #quant”, “Run 7am #run” on Tue/Thu/Sat.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        items(routines, key = { it.id }) { r -> RoutineRow(r, onSetActive, onSetSync, onDelete) }
+        items(routines, key = { it.id }) { r -> RoutineRow(r, onSetActive, onSetSync, onDelete, onEdit) }
     }
 }
 
@@ -134,9 +153,13 @@ private fun RoutineRow(
     onSetActive: (Routine, Boolean) -> Unit,
     onSetSync: (Routine, Boolean) -> Unit,
     onDelete: (Routine) -> Unit,
+    onEdit: (Routine) -> Unit,
 ) {
     val synced = r.calendarEventId != null
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onEdit(r) }.padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(Modifier.weight(1f)) {
             Text("${r.category.emoji} ${r.title}", fontWeight = FontWeight.Medium)
             val meta = buildList {

@@ -1,14 +1,19 @@
 package dev.nathanxu.dayplanner.calendar
 
 import android.Manifest
+import android.accounts.Account
+import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.ContentValues
-import android.util.Log
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Bundle
 import android.provider.CalendarContract
+import android.provider.CalendarContract.Calendars
+import android.provider.CalendarContract.Events
 import android.provider.CalendarContract.Instances
+import android.util.Log
 import androidx.core.content.ContextCompat
 import dev.nathanxu.dayplanner.domain.CalEvent
 import dev.nathanxu.dayplanner.domain.Days
@@ -22,9 +27,27 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 
+/** One calendar on the phone (a Google account usually has several). */
+data class CalInfo(
+    val id: Long,
+    val name: String,
+    val accountName: String,
+    val accountType: String,
+    val color: Int?,
+    val writable: Boolean,
+    val primary: Boolean,
+    val visible: Boolean,
+) {
+    val isGoogle: Boolean get() = accountType == GOOGLE
+
+    companion object {
+        const val GOOGLE = "com.google"
+    }
+}
+
 /**
- * Reads the Google Calendar(s) already synced to the phone through CalendarProvider.
- * No OAuth, works offline. Writes go through the Calendar app (see [insertIntent]).
+ * Reads and writes the calendars synced to the phone through CalendarProvider — no OAuth.
+ * Writes land in the provider and Google's sync adapter uploads them; [requestSync] nudges it.
  */
 class CalendarSource(private val context: Context) {
 
@@ -36,39 +59,96 @@ class CalendarSource(private val context: Context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_CALENDAR) ==
         PackageManager.PERMISSION_GRANTED
 
-    /** Best calendar to write to: a Google account's own primary calendar if there is one. */
-    suspend fun writableCalendarId(): Long? = withContext(Dispatchers.IO) {
-        if (!hasWritePermission()) return@withContext null
+    /** Every calendar on the device, Google accounts first. */
+    suspend fun calendars(): List<CalInfo> = withContext(Dispatchers.IO) {
+        if (!hasPermission()) return@withContext emptyList()
         val projection = arrayOf(
-            CalendarContract.Calendars._ID,
-            CalendarContract.Calendars.ACCOUNT_TYPE,
-            CalendarContract.Calendars.IS_PRIMARY,
-            CalendarContract.Calendars.ACCOUNT_NAME,
-            CalendarContract.Calendars.OWNER_ACCOUNT,
+            Calendars._ID,
+            Calendars.CALENDAR_DISPLAY_NAME,
+            Calendars.ACCOUNT_NAME,
+            Calendars.ACCOUNT_TYPE,
+            Calendars.CALENDAR_COLOR,
+            Calendars.CALENDAR_ACCESS_LEVEL,
+            Calendars.IS_PRIMARY,
+            Calendars.OWNER_ACCOUNT,
+            Calendars.VISIBLE,
         )
-        val selection = "${CalendarContract.Calendars.VISIBLE} = 1 AND " +
-            "${CalendarContract.Calendars.CALENDAR_ACCESS_LEVEL} >= ?"
-        val args = arrayOf(CalendarContract.Calendars.CAL_ACCESS_CONTRIBUTOR.toString())
-        var best: Long? = null
-        var bestScore = -1
-        context.contentResolver.query(CalendarContract.Calendars.CONTENT_URI, projection, selection, args, null)
-            ?.use { cur ->
-                while (cur.moveToNext()) {
-                    val google = cur.getString(1) == "com.google"
-                    val primary = cur.getInt(2) == 1 || (cur.getString(3) != null && cur.getString(3) == cur.getString(4))
-                    val score = (if (google) 2 else 0) + (if (primary) 1 else 0)
-                    if (score > bestScore) {
-                        best = cur.getLong(0)
-                        bestScore = score
-                    }
+        val out = mutableListOf<CalInfo>()
+        runCatching {
+            context.contentResolver.query(Calendars.CONTENT_URI, projection, null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val account = c.getString(2) ?: continue
+                    val owner = c.getString(7)
+                    out += CalInfo(
+                        id = c.getLong(0),
+                        name = c.getString(1) ?: account,
+                        accountName = account,
+                        accountType = c.getString(3) ?: "",
+                        color = if (c.isNull(4)) null else c.getInt(4),
+                        writable = c.getInt(5) >= Calendars.CAL_ACCESS_CONTRIBUTOR,
+                        primary = c.getInt(6) == 1 || owner == account,
+                        visible = c.getInt(8) == 1,
+                    )
                 }
             }
-        best
+        }.onFailure { Log.w(TAG, "Listing calendars failed", it) }
+        out.sortedWith(compareByDescending<CalInfo> { it.isGoogle }.thenBy { it.accountName }.thenByDescending { it.primary })
     }
 
     /**
-     * Inserts a weekly recurring event straight into the calendar provider; the Google account's
-     * sync adapter pushes it to Google Calendar. Returns the event id, or null on failure.
+     * Event instances overlapping [start, endExclusive). [calendarIds] limits which calendars are
+     * read (null = all). Declined invitations are skipped.
+     */
+    suspend fun eventsBetween(start: LocalDate, endExclusive: LocalDate, calendarIds: Set<Long>?): List<CalEvent> =
+        withContext(Dispatchers.IO) {
+            if (!hasPermission() || calendarIds?.isEmpty() == true) return@withContext emptyList()
+            val zone = ZoneId.systemDefault()
+            val uri = Instances.CONTENT_URI.buildUpon().also {
+                ContentUris.appendId(it, start.atStartOfDay(zone).toInstant().toEpochMilli())
+                ContentUris.appendId(it, endExclusive.atStartOfDay(zone).toInstant().toEpochMilli())
+            }.build()
+            val projection = arrayOf(
+                Instances.EVENT_ID,
+                Instances.TITLE,
+                Instances.BEGIN,
+                Instances.END,
+                Instances.EVENT_LOCATION,
+                Instances.ALL_DAY,
+                Instances.DISPLAY_COLOR,
+                Instances.SELF_ATTENDEE_STATUS,
+            )
+            // Ids are longs from the provider, so building the IN list directly is safe.
+            val selection = calendarIds?.let { ids -> "${Instances.CALENDAR_ID} IN (${ids.joinToString(",")})" }
+
+            val out = mutableListOf<CalEvent>()
+            runCatching {
+                context.contentResolver.query(uri, projection, selection, null, "${Instances.BEGIN} ASC")?.use { c ->
+                    while (c.moveToNext()) {
+                        if (c.getInt(7) == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) continue
+                        val allDay = c.getInt(5) == 1
+                        // All-day events are stored at UTC midnight; timed events as absolute instants.
+                        val evZone = if (allDay) ZoneOffset.UTC else zone
+                        out += CalEvent(
+                            id = c.getLong(0),
+                            title = c.getString(1)?.takeIf { it.isNotBlank() } ?: "(no title)",
+                            start = LocalDateTime.ofInstant(Instant.ofEpochMilli(c.getLong(2)), evZone),
+                            end = LocalDateTime.ofInstant(Instant.ofEpochMilli(c.getLong(3)), evZone),
+                            location = c.getString(4)?.takeIf { it.isNotBlank() },
+                            allDay = allDay,
+                            color = if (c.isNull(6)) null else c.getInt(6),
+                        )
+                    }
+                }
+            }.onFailure { Log.w(TAG, "Reading events failed", it) }
+            out
+        }
+
+    suspend fun eventsOn(date: LocalDate, calendarIds: Set<Long>?): List<CalEvent> =
+        eventsBetween(date, date.plusDays(1), calendarIds)
+
+    /**
+     * Inserts a weekly recurring event into [calendarId]. Returns the event id, or throws with a
+     * readable message so the UI can show why it failed.
      */
     suspend fun createRecurring(
         calendarId: Long,
@@ -77,90 +157,57 @@ class CalendarSource(private val context: Context) {
         time: LocalTime,
         minutes: Int,
         firstDate: LocalDate,
-    ): Long? = withContext(Dispatchers.IO) {
-        if (!hasWritePermission() || daysMask == 0) return@withContext null
+    ): Long = withContext(Dispatchers.IO) {
+        require(hasWritePermission()) { "No calendar write permission" }
+        require(daysMask != 0) { "No days selected" }
         val zone = ZoneId.systemDefault()
         val byDay = DayOfWeek.entries.filter { Days.has(daysMask, it) }.joinToString(",") { it.name.take(2) }
         val values = ContentValues().apply {
-            put(CalendarContract.Events.CALENDAR_ID, calendarId)
-            put(CalendarContract.Events.TITLE, title)
-            put(CalendarContract.Events.DESCRIPTION, "Routine from DayPlanner. Change it in the app — edits here are overwritten.")
-            put(CalendarContract.Events.DTSTART, firstDate.atTime(time).atZone(zone).toInstant().toEpochMilli())
-            // Recurring events take DURATION instead of DTEND.
-            put(CalendarContract.Events.DURATION, "PT${minutes.coerceAtLeast(5)}M")
-            put(CalendarContract.Events.RRULE, "FREQ=WEEKLY;WKST=MO;BYDAY=$byDay")
-            put(CalendarContract.Events.EVENT_TIMEZONE, zone.id)
-            put(CalendarContract.Events.AVAILABILITY, CalendarContract.Events.AVAILABILITY_BUSY)
+            put(Events.CALENDAR_ID, calendarId)
+            put(Events.TITLE, title)
+            put(Events.DESCRIPTION, "Routine from DayPlanner. Change it in the app — edits made here get replaced.")
+            put(Events.DTSTART, firstDate.atTime(time).atZone(zone).toInstant().toEpochMilli())
+            // Recurring events take DURATION (RFC 5545) instead of DTEND.
+            put(Events.DURATION, "P${minutes.coerceAtLeast(5) * 60}S")
+            put(Events.RRULE, "FREQ=WEEKLY;WKST=MO;BYDAY=$byDay")
+            put(Events.EVENT_TIMEZONE, zone.id)
+            put(Events.AVAILABILITY, Events.AVAILABILITY_BUSY)
         }
-        runCatching {
-            context.contentResolver.insert(CalendarContract.Events.CONTENT_URI, values)?.lastPathSegment?.toLongOrNull()
-        }.onFailure { Log.w(TAG, "Insert failed", it) }.getOrNull()
+        val uri = context.contentResolver.insert(Events.CONTENT_URI, values)
+            ?: error("Calendar provider rejected the event")
+        uri.lastPathSegment?.toLongOrNull() ?: error("Calendar provider returned no event id")
     }
 
     suspend fun deleteEvent(eventId: Long): Boolean = withContext(Dispatchers.IO) {
         if (!hasWritePermission()) return@withContext false
         runCatching {
-            context.contentResolver.delete(
-                ContentUris.withAppendedId(CalendarContract.Events.CONTENT_URI, eventId), null, null,
-            ) > 0
+            context.contentResolver.delete(ContentUris.withAppendedId(Events.CONTENT_URI, eventId), null, null) > 0
         }.getOrDefault(false)
     }
 
-    /** False if the event was deleted (e.g. by you in Google Calendar). Null if we can't tell. */
-    suspend fun eventExists(eventId: Long): Boolean? = withContext(Dispatchers.IO) {
+    /** Calendar id of a live event, or null if it no longer exists (e.g. you deleted it). */
+    suspend fun eventCalendar(eventId: Long): Long? = withContext(Dispatchers.IO) {
         if (!hasPermission()) return@withContext null
         runCatching {
             context.contentResolver.query(
-                CalendarContract.Events.CONTENT_URI,
-                arrayOf(CalendarContract.Events._ID),
-                "${CalendarContract.Events._ID} = ? AND ${CalendarContract.Events.DELETED} = 0",
+                Events.CONTENT_URI,
+                arrayOf(Events.CALENDAR_ID),
+                "${Events._ID} = ? AND ${Events.DELETED} = 0",
                 arrayOf(eventId.toString()),
                 null,
-            )?.use { it.count > 0 }
+            )?.use { if (it.moveToFirst()) it.getLong(0) else null }
         }.getOrNull()
     }
 
-    suspend fun eventsOn(date: LocalDate): List<CalEvent> = withContext(Dispatchers.IO) {
-        if (!hasPermission()) return@withContext emptyList()
-        val zone = ZoneId.systemDefault()
-        val begin = date.atStartOfDay(zone).toInstant().toEpochMilli()
-        val end = date.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-
-        val uri = Instances.CONTENT_URI.buildUpon().also {
-            ContentUris.appendId(it, begin)
-            ContentUris.appendId(it, end)
-        }.build()
-
-        val projection = arrayOf(
-            Instances.EVENT_ID,
-            Instances.TITLE,
-            Instances.BEGIN,
-            Instances.END,
-            Instances.EVENT_LOCATION,
-            Instances.ALL_DAY,
-            Instances.DISPLAY_COLOR,
-            Instances.SELF_ATTENDEE_STATUS,
-        )
-
-        val out = mutableListOf<CalEvent>()
-        context.contentResolver.query(uri, projection, null, null, "${Instances.BEGIN} ASC")?.use { c ->
-            while (c.moveToNext()) {
-                if (c.getInt(7) == CalendarContract.Attendees.ATTENDEE_STATUS_DECLINED) continue
-                val allDay = c.getInt(5) == 1
-                // All-day events are stored in UTC midnight; timed events in the event zone.
-                val evZone = if (allDay) ZoneOffset.UTC else zone
-                out += CalEvent(
-                    id = c.getLong(0),
-                    title = c.getString(1) ?: "(no title)",
-                    start = LocalDateTime.ofInstant(Instant.ofEpochMilli(c.getLong(2)), evZone),
-                    end = LocalDateTime.ofInstant(Instant.ofEpochMilli(c.getLong(3)), evZone),
-                    location = c.getString(4)?.takeIf { it.isNotBlank() },
-                    allDay = allDay,
-                    color = if (c.isNull(6)) null else c.getInt(6),
-                )
+    /** Asks Android to sync this Google account's calendars now rather than whenever it gets round to it. */
+    fun requestSync(accountName: String, accountType: String = CalInfo.GOOGLE) {
+        runCatching {
+            val extras = Bundle().apply {
+                putBoolean(ContentResolver.SYNC_EXTRAS_MANUAL, true)
+                putBoolean(ContentResolver.SYNC_EXTRAS_EXPEDITED, true)
             }
-        }
-        out
+            ContentResolver.requestSync(Account(accountName, accountType), CalendarContract.AUTHORITY, extras)
+        }.onFailure { Log.w(TAG, "requestSync failed", it) }
     }
 
     companion object {
@@ -171,11 +218,11 @@ class CalendarSource(private val context: Context) {
             val zone = ZoneId.systemDefault()
             val s = start.atZone(zone).toInstant().toEpochMilli()
             return Intent(Intent.ACTION_INSERT)
-                .setData(CalendarContract.Events.CONTENT_URI)
-                .putExtra(CalendarContract.Events.TITLE, title)
+                .setData(Events.CONTENT_URI)
+                .putExtra(Events.TITLE, title)
                 .putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, s)
                 .putExtra(CalendarContract.EXTRA_EVENT_END_TIME, s + minutes * 60_000L)
-                .apply { description?.let { putExtra(CalendarContract.Events.DESCRIPTION, it) } }
+                .apply { description?.let { putExtra(Events.DESCRIPTION, it) } }
         }
 
         fun openDayIntent(date: LocalDate): Intent {
@@ -184,6 +231,17 @@ class CalendarSource(private val context: Context) {
                 ContentUris.appendId(it, ms)
             }.build()
             return Intent(Intent.ACTION_VIEW).setData(uri)
+        }
+
+        /** Opens one event (one occurrence if [start] is given) in the Calendar app. */
+        fun viewEventIntent(eventId: Long, start: LocalDateTime?, end: LocalDateTime?): Intent {
+            val zone = ZoneId.systemDefault()
+            return Intent(Intent.ACTION_VIEW)
+                .setData(ContentUris.withAppendedId(Events.CONTENT_URI, eventId))
+                .apply {
+                    start?.let { putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, it.atZone(zone).toInstant().toEpochMilli()) }
+                    end?.let { putExtra(CalendarContract.EXTRA_EVENT_END_TIME, it.atZone(zone).toInstant().toEpochMilli()) }
+                }
         }
     }
 }
