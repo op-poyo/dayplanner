@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">DayPlanner</string>
+    <string name="widget_name">Today</string>
+    <string name="widget_description">Today\'s tasks and next event</string>
+</resources>
