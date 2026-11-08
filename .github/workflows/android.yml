@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write   # lets the workflow publish the APK as a release
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -31,6 +34,19 @@ jobs:
         with:
           name: dayplanner-debug-apk
           path: app/build/outputs/apk/debug/*.apk
+
+      # Phone-friendly download: Releases → "Latest build" → DayPlanner.apk (no login needed).
+      - name: Publish APK to "latest" release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk DayPlanner.apk
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest DayPlanner.apk \
+            --title "Latest build" \
+            --notes "Built from ${GITHUB_SHA::7}. Download DayPlanner.apk and tap to install." \
+            --latest
 
       - name: Upload test reports
         if: failure()
