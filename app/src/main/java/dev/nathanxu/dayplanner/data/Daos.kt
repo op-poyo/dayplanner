@@ -13,7 +13,8 @@ private const val TODAY_FILTER = """
     (date = :today) OR (date < :today AND done = 0) OR (date IS NULL AND done = 0)
 """
 private const val TODAY_ORDER = """
-    ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date ASC, id ASC
+    ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date ASC,
+    CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC, id ASC
 """
 
 @Dao
@@ -27,6 +28,10 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE date > :today AND done = 0 ORDER BY date ASC, id ASC")
     fun observeUpcoming(today: LocalDate): Flow<List<Task>>
+
+    /** Tasks you typed against a goal (its steps) — excludes daily splits and +1 logs. */
+    @Query("SELECT * FROM tasks WHERE goalId IS NOT NULL AND genKey IS NULL ORDER BY done ASC, date ASC, id ASC")
+    fun observeSteps(): Flow<List<Task>>
 
     @Insert suspend fun insert(task: Task): Long
 
@@ -42,8 +47,38 @@ interface TaskDao {
     @Query("DELETE FROM tasks WHERE id = :id")
     suspend fun delete(id: Long)
 
-    @Query("SELECT goalId AS goalId, COUNT(*) AS n FROM tasks WHERE done = 1 AND goalId IS NOT NULL GROUP BY goalId")
-    fun observeGoalCounts(): Flow<List<GoalCount>>
+    @Query(
+        """
+        SELECT goalId AS goalId,
+          COALESCE(SUM(CASE WHEN done = 1 THEN units ELSE 0 END), 0) AS doneUnits,
+          COALESCE(SUM(CASE WHEN genKey IS NULL THEN 1 ELSE 0 END), 0) AS stepTotal,
+          COALESCE(SUM(CASE WHEN genKey IS NULL AND done = 1 THEN 1 ELSE 0 END), 0) AS stepDone,
+          COALESCE(SUM(CASE WHEN date = :today THEN units ELSE 0 END), 0) AS todayUnits,
+          COALESCE(SUM(CASE WHEN date = :today AND done = 1 THEN units ELSE 0 END), 0) AS todayDoneUnits
+        FROM tasks WHERE goalId IS NOT NULL GROUP BY goalId
+        """
+    )
+    fun observeGoalStats(today: LocalDate): Flow<List<GoalStats>>
+
+    /** Units done for a goal on days before [date] (undated done tasks count too). */
+    @Query(
+        """
+        SELECT COALESCE(SUM(units), 0) FROM tasks
+        WHERE goalId = :goalId AND done = 1 AND (date IS NULL OR date < :date)
+        """
+    )
+    suspend fun doneUnitsBefore(goalId: Long, date: LocalDate): Int
+
+    /**
+     * Unticked generated tasks from earlier days. Routine misses just expire; a goal's missed
+     * share is folded into the next day's quota, so neither should pile up as overdue.
+     */
+    @Query("DELETE FROM tasks WHERE genKey LIKE :prefix || '%' AND done = 0 AND date < :date")
+    suspend fun deleteStaleGenerated(prefix: String, date: LocalDate)
+
+    /** Unticked daily splits for a goal (used when the goal ends or splitting is turned off). */
+    @Query("DELETE FROM tasks WHERE goalId = :goalId AND genKey LIKE 'g:%' AND done = 0")
+    suspend fun deleteOpenSplits(goalId: Long)
 }
 
 @Dao
@@ -54,8 +89,8 @@ interface GoalDao {
     @Query("SELECT * FROM goals WHERE archived = 0")
     suspend fun active(): List<Goal>
 
-    @Query("SELECT * FROM goals WHERE recurring = 1")
-    suspend fun recurring(): List<Goal>
+    @Query("SELECT * FROM goals WHERE id = :id")
+    suspend fun get(id: Long): Goal?
 
     @Insert suspend fun insert(goal: Goal): Long
     @Update suspend fun update(goal: Goal)
@@ -64,8 +99,11 @@ interface GoalDao {
 
 @Dao
 interface RoutineDao {
-    @Query("SELECT * FROM routines ORDER BY active DESC, id ASC")
+    @Query("SELECT * FROM routines ORDER BY active DESC, CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC, id ASC")
     fun observeAll(): Flow<List<Routine>>
+
+    @Query("SELECT * FROM routines")
+    suspend fun all(): List<Routine>
 
     @Query("SELECT * FROM routines WHERE active = 1")
     suspend fun active(): List<Routine>

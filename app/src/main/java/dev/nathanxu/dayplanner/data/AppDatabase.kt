@@ -8,7 +8,7 @@ import androidx.room.TypeConverters
 
 @Database(
     entities = [Task::class, Goal::class, Routine::class, TravelCache::class],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -20,6 +20,9 @@ abstract class AppDatabase : RoomDatabase() {
 
     companion object {
         fun build(context: Context): AppDatabase =
-            Room.databaseBuilder(context, AppDatabase::class.java, "dayplanner.db").build()
+            Room.databaseBuilder(context, AppDatabase::class.java, "dayplanner.db")
+                // v1 never shipped with real data. Replace with real migrations before you rely on it.
+                .fallbackToDestructiveMigration()
+                .build()
     }
 }

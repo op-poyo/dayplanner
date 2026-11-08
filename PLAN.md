@@ -86,7 +86,21 @@ widget (Glance) ──> Repository
 - **Weak spots to fix next**: no settings screen (travel mode is hard-coded to transit); no home location, so the first leg of the day has no travel time; deleting a routine task gets it recreated; no task editing (delete and re-add); widget only refreshes the date every ~30 min after midnight.
 - **Design debt worth paying early**: Room `exportSchema = false` and no migrations — fine until you have data you care about. Turn on schema export and write migrations before v2.
 
-## 9. Roadmap
+## 9. v1.1 changes
+
+- **Routines → Google Calendar.** Timed routines are written as weekly recurring events (RRULE) via CalendarProvider with WRITE_CALENDAR; Google's sync adapter uploads them. Reconciled on every app open and routine edit. Deleting the event in Google Calendar switches sync off for that routine rather than fighting you. One-way: the app owns the routine.
+- **Goal breakdowns.** Count goals get a paced daily to-do: by day k of n you should have done ceil(target·k/n); today's to-do is the shortfall, so missed days are absorbed instead of piling up as overdue. Goals without a number become steps goals (% = steps ticked).
+- **Percentages everywhere.** Goal cards (% + pace + today's share), a Today-screen goal strip, goal % on linked tasks, top three in the widget.
+- **Times.** `18:30` / `6pm` in quick-add; tasks sort by time; block-time uses it.
+- Schema v2 with destructive migration (fine pre-release; write real migrations before relying on data).
+
+Self-review of v1.1:
+- Pacing spreads evenly across all days of the period, including weekends. If you only want weekdays, that needs a per-goal day mask (cheap to add).
+- Changing a routine's days/time means delete + re-add; there's no edit screen yet.
+- Calendar choice is automatic (Google primary). If you have several Google accounts it may pick the wrong one; a picker belongs in the settings screen.
+- Still uncompiled on Android (no SDK here). Domain logic: 24/24 tests pass.
+
+## 10. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

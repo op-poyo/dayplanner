@@ -47,10 +47,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val messages = _messages.asSharedFlow()
 
+    private val _canWriteCalendar = MutableStateFlow(repo.calendar.hasWritePermission())
+    val canWriteCalendar: StateFlow<Boolean> = _canWriteCalendar.asStateFlow()
+
     fun refresh() = viewModelScope.launch {
         val d = LocalDate.now()
         _today.value = d
+        _canWriteCalendar.value = repo.calendar.hasWritePermission()
         repo.ensureFor(d)
+        repo.syncRoutines()
         repo.refreshWidget()
         _loading.value = true
         _plan.value = runCatching { repo.todayPlan() }.getOrElse {
@@ -73,10 +78,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logGoal(goal: Goal) = viewModelScope.launch { repo.logGoal(goal, _today.value) }
     fun setRecurring(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setRecurring(goal, on) }
+    fun setSplit(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setSplit(goal, on, _today.value) }
     fun deleteGoal(goal: Goal) = viewModelScope.launch { repo.deleteGoal(goal) }
+    fun addStep(goal: Goal, text: String) = viewModelScope.launch {
+        _messages.emit(repo.addStep(goal, text, _today.value))
+    }
 
-    fun addRoutine(text: String, mask: Int) = viewModelScope.launch {
-        _messages.emit(repo.addRoutine(text, mask, _today.value))
+    fun addRoutine(text: String, mask: Int, sync: Boolean) = viewModelScope.launch {
+        _messages.emit(repo.addRoutine(text, mask, sync, _today.value))
+    }
+    fun setRoutineSync(r: Routine, on: Boolean) = viewModelScope.launch {
+        repo.setRoutineSync(r, on)?.let { _messages.emit(it) }
     }
     fun setRoutineActive(r: Routine, on: Boolean) = viewModelScope.launch { repo.setRoutineActive(r, on) }
     fun deleteRoutine(r: Routine) = viewModelScope.launch { repo.deleteRoutine(r) }

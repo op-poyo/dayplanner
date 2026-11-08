@@ -2,6 +2,7 @@ package dev.nathanxu.dayplanner.domain
 
 import java.time.DayOfWeek
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.temporal.TemporalAdjusters
 
 sealed interface Parsed
@@ -12,6 +13,7 @@ data class TaskDraft(
     val category: Category,
     val minutes: Int?,
     val goalHint: String?,
+    val time: LocalTime? = null,
 ) : Parsed
 
 data class GoalDraft(
@@ -19,6 +21,7 @@ data class GoalDraft(
     val period: Period,
     val target: Int,
     val recurring: Boolean,
+    val category: Category = Category.OTHER,
 ) : Parsed
 
 /**
@@ -32,6 +35,18 @@ object QuickAdd {
     private val duration1 = Regex("""^(\d{1,2})h(?:(\d{1,2})m?)?$""")
     private val duration2 = Regex("""^(\d{1,3})m(?:in)?$""")
     private val targetRx = Regex("""^x(\d{1,3})$""")
+    private val time24 = Regex("""^([01]?\d|2[0-3])[:.]([0-5]\d)$""")
+    private val time12 = Regex("""^(1[0-2]|0?[1-9])(?:[:.]([0-5]\d))?(am|pm)$""")
+
+    fun parseTime(token: String): LocalTime? {
+        val t = token.lowercase()
+        time24.find(t)?.let { return LocalTime.of(it.groupValues[1].toInt(), it.groupValues[2].toInt()) }
+        time12.find(t)?.let {
+            val h = it.groupValues[1].toInt() % 12 + if (it.groupValues[3] == "pm") 12 else 0
+            return LocalTime.of(h, it.groupValues[2].toIntOrNull() ?: 0)
+        }
+        return null
+    }
 
     private val weekdays: Map<String, DayOfWeek> = buildMap {
         mapOf(
@@ -56,6 +71,7 @@ object QuickAdd {
         var period: Period? = null
         var target = 1
         var recurring = false
+        var time: LocalTime? = null
         val title = mutableListOf<String>()
 
         words.forEachIndexed { i, w ->
@@ -79,6 +95,7 @@ object QuickAdd {
                     minutes = g[1].toInt() * 60 + (g[2].toIntOrNull() ?: 0)
                 }
                 duration2.matches(lw) -> minutes = duration2.find(lw)!!.groupValues[1].toInt()
+                parseTime(lw) != null -> time = parseTime(lw)
                 else -> title += w
             }
         }
@@ -86,9 +103,9 @@ object QuickAdd {
         val t = title.joinToString(" ").trim()
         if (t.isEmpty()) return null
         return if (period != null) {
-            GoalDraft(t, period!!, target, recurring)
+            GoalDraft(t, period!!, target, recurring, category)
         } else {
-            TaskDraft(t, date, category, minutes?.takeIf { it > 0 }, goalHint)
+            TaskDraft(t, date, category, minutes?.takeIf { it > 0 }, goalHint, time)
         }
     }
 }

@@ -35,6 +35,7 @@ import androidx.glance.text.FontWeight
 import androidx.glance.text.Text
 import androidx.glance.text.TextDecoration
 import androidx.glance.text.TextStyle
+import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.domain.CalEvent
 import dev.nathanxu.dayplanner.repository
@@ -59,12 +60,13 @@ class TodayWidget : GlanceAppWidget() {
 
         provideContent {
             val tasks by repo.observeToday(today).collectAsState(initial = emptyList())
-            GlanceTheme { Content(today, tasks, next) }
+            val goals by repo.observeGoals(today).collectAsState(initial = emptyList())
+            GlanceTheme { Content(today, tasks, next, goals) }
         }
     }
 
     @Composable
-    private fun Content(today: LocalDate, tasks: List<Task>, next: CalEvent?) {
+    private fun Content(today: LocalDate, tasks: List<Task>, next: CalEvent?, goals: List<GoalProgress>) {
         val c = GlanceTheme.colors
         val remaining = tasks.count { !it.done }
         Column(
@@ -104,6 +106,13 @@ class TodayWidget : GlanceAppWidget() {
                 maxLines = 1,
                 style = TextStyle(color = c.primary, fontSize = 12.sp),
             )
+            if (goals.isNotEmpty()) {
+                Text(
+                    text = "◎ " + goals.take(3).joinToString(" · ") { "${it.goal.title.take(14)} ${it.status.percent}%" },
+                    maxLines = 1,
+                    style = TextStyle(color = c.onSurfaceVariant, fontSize = 12.sp),
+                )
+            }
             Spacer(GlanceModifier.height(6.dp))
 
             LazyColumn(modifier = GlanceModifier.fillMaxSize()) {
@@ -128,7 +137,9 @@ class TodayWidget : GlanceAppWidget() {
             )
             Spacer(GlanceModifier.width(8.dp))
             Text(
-                text = (if (overdue) "⚠ " else "") + task.title + (task.minutes?.let { " · ${it}m" } ?: ""),
+                text = (if (overdue) "⚠ " else "") +
+                    (task.time?.let { it.format(DateTimeFormatter.ofPattern("HH:mm")) + " " } ?: "") +
+                    task.title + (task.minutes?.let { " · ${it}m" } ?: ""),
                 maxLines = 1,
                 style = TextStyle(
                     color = if (task.done) c.onSurfaceVariant else c.onSurface,

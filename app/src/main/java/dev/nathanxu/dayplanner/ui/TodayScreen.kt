@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.nathanxu.dayplanner.calendar.CalendarSource
+import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.data.TodayPlan
 import dev.nathanxu.dayplanner.domain.TimelineItem
@@ -63,7 +64,9 @@ fun TodayScreen(
     tasks: List<Task>,
     upcoming: List<Task>,
     plan: TodayPlan?,
+    goals: List<GoalProgress>,
     loading: Boolean,
+    onOpenGoals: () -> Unit,
     quickAddFocus: FocusRequester,
     onQuickAdd: (String) -> Unit,
     onToggle: (Task) -> Unit,
@@ -123,7 +126,14 @@ fun TodayScreen(
             }
         }
 
+        // ---------- goals at a glance ----------
+        if (goals.isNotEmpty()) {
+            item { SectionHeader("Goals") }
+            items(goals.take(5), key = { "g${it.goal.id}" }) { gp -> GoalGlance(gp, onOpenGoals) }
+        }
+
         // ---------- tasks ----------
+        val goalsById = goals.associateBy { it.goal.id }
         val open = tasks.count { !it.done }
         item { SectionHeader(if (tasks.isEmpty()) "Tasks" else "Tasks · $open left") }
         if (tasks.isEmpty()) item {
@@ -133,6 +143,7 @@ fun TodayScreen(
             TaskRow(
                 task = task,
                 today = today,
+                goal = task.goalId?.let { goalsById[it] },
                 onToggle = { onToggle(task) },
                 onDelete = { onDelete(task) },
                 onBlock = { ctx.blockTime(task, plan) },
@@ -224,7 +235,38 @@ private fun FreeRow(item: TimelineItem.Free) {
 }
 
 @Composable
-private fun TaskRow(task: Task, today: LocalDate, onToggle: () -> Unit, onDelete: () -> Unit, onBlock: () -> Unit) {
+private fun GoalGlance(gp: GoalProgress, onClick: () -> Unit) {
+    val s = gp.status
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            gp.goal.title, modifier = Modifier.weight(1f),
+            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
+        )
+        LinearProgressIndicator(progress = { s.fraction }, modifier = Modifier.width(90.dp).padding(horizontal = 8.dp))
+        Text(
+            "${s.percent}%", modifier = Modifier.width(40.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = when {
+                s.complete -> MaterialTheme.colorScheme.primary
+                (s.paceDelta ?: 0) < 0 -> MaterialTheme.colorScheme.error
+                else -> MaterialTheme.colorScheme.onSurface
+            },
+        )
+    }
+}
+
+@Composable
+private fun TaskRow(
+    task: Task,
+    today: LocalDate,
+    goal: GoalProgress?,
+    onToggle: () -> Unit,
+    onDelete: () -> Unit,
+    onBlock: () -> Unit,
+) {
     val overdue = !task.done && task.date != null && task.date.isBefore(today)
     Row(Modifier.fillMaxWidth().clickable(onClick = onToggle), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = task.done, onCheckedChange = { onToggle() })
@@ -236,8 +278,10 @@ private fun TaskRow(task: Task, today: LocalDate, onToggle: () -> Unit, onDelete
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
             val meta = buildList {
+                task.time?.let { add(it.format(hm)) }
                 add("${task.category.emoji} ${task.category.label}")
                 task.minutes?.let { add(formatMinutes(it.toLong())) }
+                goal?.let { add("→ ${it.goal.title} ${it.status.percent}%") }
                 when {
                     overdue -> add("overdue · ${task.date?.format(dayFmt)}")
                     task.date == null -> add("someday")
@@ -262,6 +306,7 @@ private fun TaskRow(task: Task, today: LocalDate, onToggle: () -> Unit, onDelete
 private fun SyntaxCard() {
     val rows = listOf(
         "fri / tmr / someday" to "date (default today)",
+        "18:30 / 6pm" to "time",
         "#study #run #cook #shop #proj #quant" to "category",
         "45m / 1h30" to "duration",
         "^leetcode" to "count towards a goal",
@@ -293,8 +338,9 @@ private fun SyntaxCard() {
 /** Sends the task to the Calendar app, starting at the first free slot long enough for it. */
 private fun Context.blockTime(task: Task, plan: TodayPlan?) {
     val minutes = task.minutes ?: 30
+    val fixed = task.time?.let { (task.date ?: LocalDate.now()).atTime(it) }
     val slot = plan?.items?.filterIsInstance<TimelineItem.Free>()?.firstOrNull { it.minutes >= minutes }
-    val start = slot?.start ?: LocalDateTime.now().let {
+    val start = fixed ?: slot?.start ?: LocalDateTime.now().let {
         val rounded = it.withSecond(0).withNano(0)
         rounded.plusMinutes(((15 - rounded.minute % 15) % 15).toLong())
     }

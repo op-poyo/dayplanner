@@ -90,13 +90,28 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     val routines by vm.routines.collectAsStateWithLifecycle()
     val plan by vm.plan.collectAsStateWithLifecycle()
     val loading by vm.loading.collectAsStateWithLifecycle()
+    val canWriteCalendar by vm.canWriteCalendar.collectAsStateWithLifecycle()
 
     var tab by rememberSaveable { mutableStateOf(Tab.TODAY) }
     val snackbar = remember { SnackbarHostState() }
     val quickAddFocus = remember { FocusRequester() }
 
-    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+    // Read for the timeline, write so routines can become recurring events. Asked together once.
+    val calendarPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         vm.refresh()
+    }
+    val requestCalendar = {
+        calendarPermission.launch(arrayOf(Manifest.permission.READ_CALENDAR, Manifest.permission.WRITE_CALENDAR))
+    }
+    val goalActions = remember(vm) {
+        GoalActions(
+            onLog = { vm.logGoal(it) },
+            onSetRecurring = { g, on -> vm.setRecurring(g, on) },
+            onSetSplit = { g, on -> vm.setSplit(g, on) },
+            onDelete = { vm.deleteGoal(it) },
+            onAddStep = { g, text -> vm.addStep(g, text) },
+            onToggleStep = { vm.toggle(it) },
+        )
     }
 
     LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
@@ -147,26 +162,29 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 tasks = tasks,
                 upcoming = upcoming,
                 plan = plan,
+                goals = goals,
                 loading = loading,
+                onOpenGoals = { tab = Tab.GOALS },
                 quickAddFocus = quickAddFocus,
                 onQuickAdd = { vm.quickAdd(it) },
                 onToggle = { vm.toggle(it) },
                 onDelete = { vm.delete(it) },
-                onConnectCalendar = { calendarPermission.launch(Manifest.permission.READ_CALENDAR) },
+                onConnectCalendar = requestCalendar,
                 contentPadding = padding,
             )
             Tab.GOALS -> GoalsScreen(
                 today = today,
                 goals = goals,
                 onQuickAdd = { vm.quickAdd(it) },
-                onLog = { vm.logGoal(it) },
-                onSetRecurring = { g, on -> vm.setRecurring(g, on) },
-                onDelete = { vm.deleteGoal(it) },
+                actions = goalActions,
                 contentPadding = padding,
             )
             Tab.ROUTINES -> RoutinesScreen(
                 routines = routines,
-                onAdd = { text, mask -> vm.addRoutine(text, mask) },
+                canWriteCalendar = canWriteCalendar,
+                onRequestCalendar = requestCalendar,
+                onAdd = { text, mask, sync -> vm.addRoutine(text, mask, sync) },
+                onSetSync = { r, on -> vm.setRoutineSync(r, on) },
                 onSetActive = { r, on -> vm.setRoutineActive(r, on) },
                 onDelete = { vm.deleteRoutine(it) },
                 contentPadding = padding,
