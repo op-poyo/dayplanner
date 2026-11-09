@@ -360,6 +360,7 @@ private fun TravelTab(settings: SettingsState, travelEnabled: Boolean, a: Settin
 }
 
 /** The alerts part of Planning & alerts: switches, times, and what's scheduled. */
+@OptIn(ExperimentalLayoutApi::class)
 private fun LazyListScope.alertItems(settings: SettingsState, alertState: AlertState, a: SettingsActions) {
     item {
         val ctx = LocalContext.current
