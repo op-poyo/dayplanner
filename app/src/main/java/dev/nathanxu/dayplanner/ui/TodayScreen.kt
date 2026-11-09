@@ -39,6 +39,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -72,6 +73,7 @@ fun TodayScreen(
     onOpenGoals: () -> Unit,
     quickAddFocus: FocusRequester,
     onQuickAdd: (String) -> Unit,
+    onExpandTodo: (String) -> Unit,
     onToggle: (Task) -> Unit,
     onDelete: (Task) -> Unit,
     onEditTask: (Task) -> Unit,
@@ -86,13 +88,14 @@ fun TodayScreen(
         contentPadding = PaddingValues(
             start = 16.dp, end = 16.dp,
             top = contentPadding.calculateTopPadding() + 8.dp,
-            bottom = contentPadding.calculateBottomPadding() + 24.dp,
+            bottom = contentPadding.calculateBottomPadding() + 88.dp,
         ),
     ) {
         item {
             QuickAddBar(
                 placeholder = "Problem sheet fri #study 1h",
                 onSubmit = onQuickAdd,
+                onExpand = onExpandTodo,
                 focusRequester = quickAddFocus,
             )
             TextButton(onClick = { showSyntax = !showSyntax }) {
@@ -154,10 +157,11 @@ fun TodayScreen(
         val open = tasks.count { !it.done }
         item { SectionHeader(if (tasks.isEmpty()) "To-do" else "To-do · $open left") }
         if (tasks.isEmpty()) item {
-            Text("Nothing to do. Add one above, or set up routines.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            EmptyNote("Nothing to do. Type one above, tap ✎ for the full form, or set up routines.")
         }
         items(tasks, key = { it.id }) { task ->
             TaskRow(
+                modifier = Modifier.animateItem(),
                 task = task,
                 today = today,
                 tag = Tags.find(task.category, tags),
@@ -191,9 +195,12 @@ fun TodayScreen(
 @Composable
 private fun EventRow(item: TimelineItem.Event, onClick: () -> Unit) {
     val e = item.event
-    val bar = e.color?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
+    // Things-style: once an event is over it fades, so what's still ahead stands out.
+    val past = !e.allDay && e.end.isBefore(java.time.LocalDateTime.now())
+    val bar = if (past) MaterialTheme.colorScheme.outlineVariant else e.color?.let { Color(it) } ?: MaterialTheme.colorScheme.primary
     Row(
-        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 4.dp).clickable(onClick = onClick),
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).padding(vertical = 4.dp)
+            .alpha(if (past) 0.55f else 1f).clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -281,6 +288,7 @@ private fun GoalGlance(gp: GoalProgress, onClick: () -> Unit) {
 
 @Composable
 private fun TaskRow(
+    modifier: Modifier = Modifier,
     task: Task,
     today: LocalDate,
     tag: Tag,
@@ -291,9 +299,11 @@ private fun TaskRow(
     onBlock: () -> Unit,
 ) {
     val overdue = !task.done && task.date != null && task.date.isBefore(today)
-    // Tap the row to edit; the checkbox ticks.
+    val haptic = rememberHaptic()
+    // Swipe right to tick, left to delete; tap to edit; the checkbox ticks too.
+    SwipeRow(done = task.done, onToggle = onToggle, onDelete = onDelete, modifier = modifier) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onEdit), verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = task.done, onCheckedChange = { onToggle() })
+        Checkbox(checked = task.done, onCheckedChange = { haptic(); onToggle() })
         Column(Modifier.weight(1f)) {
             Text(
                 task.title + if (task.units > 1) " ×${task.units}" else "",
@@ -324,9 +334,7 @@ private fun TaskRow(
         if (!task.done) {
             IconButton(onClick = onBlock) { Icon(Icons.Default.DateRange, contentDescription = "Block time in calendar") }
         }
-        IconButton(onClick = onDelete) {
-            Icon(Icons.Default.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+    }
     }
 }
 

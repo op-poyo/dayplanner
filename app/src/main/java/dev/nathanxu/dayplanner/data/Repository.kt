@@ -121,6 +121,30 @@ class Repository(
 
     suspend fun todayTasks(today: LocalDate): List<Task> = db.tasks().today(today)
 
+    fun observeAllTodos(sinceMillis: Long): Flow<List<Task>> = db.tasks().observeAllTodos(sinceMillis)
+
+    /** Finished one-off plans with their final status, newest first. */
+    fun observeFinished(today: LocalDate): Flow<List<GoalProgress>> = combine(
+        db.goals().observeFinished(),
+        db.tasks().observeGoalStats(today),
+        db.tasks().observeSteps(),
+    ) { goals, stats, steps ->
+        val statsBy = stats.associateBy { it.goalId }
+        val stepsBy = steps.groupBy { it.goalId }
+        goals.map { g ->
+            val s = statsBy[g.id]
+            GoalProgress(
+                goal = g,
+                status = GoalStatus.of(
+                    target = g.target, start = g.start, end = g.end, today = g.end,
+                    doneUnits = s?.doneUnits ?: 0, stepTotal = s?.stepTotal ?: 0, stepDone = s?.stepDone ?: 0,
+                    todayUnits = 0, todayDoneUnits = 0,
+                ),
+                steps = stepsBy[g.id].orEmpty(),
+            )
+        }
+    }
+
     // ---------- tags ----------
 
     /** Tag key for "#raw" (created if new), or Other. Second value: whether it was created. */
@@ -152,6 +176,15 @@ class Repository(
         val accounts = linkedAccounts(cals) ?: return null
         val hidden = settings.current.hiddenCalendars
         return cals.filter { it.accountName in accounts && it.id !in hidden }.map { it.id }.toSet()
+    }
+
+    /** Asks Android to sync the linked Google accounts now, so edits on either side show up sooner. */
+    suspend fun requestCalendarSync() {
+        val cals = calendar.calendars()
+        val accounts = linkedAccounts(cals) ?: googleAccounts(cals).toSet()
+        cals.filter { it.isGoogle && it.accountName in accounts }
+            .map { it.accountName to it.accountType }.distinct()
+            .forEach { (name, type) -> calendar.requestSync(name, type) }
     }
 
     fun setAccountLinked(account: String, linked: Boolean) {
@@ -344,6 +377,20 @@ class Repository(
         return newTag
     }
 
+    /** From the full to-do form (also used for steps, with goalId set). */
+    suspend fun createTask(task: Task): String {
+        if (task.title.isBlank()) return "Give it a title"
+        db.tasks().insert(task.copy(id = 0, title = task.title.trim(), createdAt = System.currentTimeMillis()))
+        refreshWidget()
+        return "Added “${task.title.trim()}”"
+    }
+
+    /** Puts back something you just deleted (snackbar Undo). */
+    suspend fun restoreTask(task: Task) {
+        db.tasks().insertIgnore(task)
+        refreshWidget()
+    }
+
     suspend fun updateTask(task: Task) {
         db.tasks().update(task)
         refreshWidget()
@@ -410,7 +457,7 @@ class Repository(
             db.tasks().setDone(t.id, false, null)
         }
         refreshWidget()
-        return "Took 1 off ${goal.title}"
+        return ""
     }
 
     /** Saves an edited plan; today's to-do is recalculated whenever anything it depends on changed. */
@@ -425,6 +472,22 @@ class Repository(
             db.tasks().deleteOpenSplits(goal.id)
             ensureFor(today)
         }
+        refreshWidget()
+    }
+
+    /** Moves a plan's end date (and brings a finished one back). Today's to-do is re-paced. */
+    suspend fun extendGoal(goal: Goal, newEnd: LocalDate, today: LocalDate): String {
+        if (newEnd.isBefore(goal.start)) return "End can't be before the start"
+        db.goals().update(goal.copy(endDate = newEnd, period = Period.CUSTOM, archived = newEnd.isBefore(today)))
+        db.tasks().deleteOpenSplits(goal.id)
+        ensureFor(today)
+        refreshWidget()
+        return "${goal.title} now runs to ${dayFmt.format(newEnd)}"
+    }
+
+    suspend fun restoreGoal(goal: Goal, today: LocalDate) {
+        db.goals().insert(goal)
+        ensureFor(today)
         refreshWidget()
     }
 
@@ -555,6 +618,13 @@ class Repository(
         if (sync && r.time == null) return "Give “${r.title}” a time to sync it — tap it to edit"
         val status = syncRoutines()
         return if (status.ok) null else status.message
+    }
+
+    suspend fun restoreRoutine(r: Routine, today: LocalDate) {
+        db.routines().insert(r.copy(calendarEventId = null))
+        ensureFor(today)
+        syncRoutines()
+        refreshWidget()
     }
 
     suspend fun deleteRoutine(r: Routine) {

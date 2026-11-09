@@ -137,7 +137,16 @@ Ordered by importance:
 - Routine creation form with live clash check before saving; end time and duration kept in sync.
 - Next: auto-scheduler.
 
-## 14. Roadmap
+## 14. v1.6 changes
+
+- Consistent creation: quick line + ✎ full form (prefilled by the parser) everywhere; one Extended FAB per tab; editors are bottom sheets.
+- Tasks tab: Long-term | All to-dos (Things-style grouping, pure + tested), Finished plans, Extend.
+- Design pass from research: swipe actions, Undo snackbars, haptics, progress rings, past events faded, item animations, empty states.
+- Sync lag: ContentObserver on the calendar provider (debounced reload) + requestSync on open/refresh. Remaining lag is Android's sync of Google itself (seconds to a minute).
+- Snackbars: collectLatest + dismiss, so they replace instead of queue; no messages for +1/−1/tick.
+- Next: auto-scheduler (v1.7), then backup/restore toward 2.0.
+
+## 15. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

@@ -15,6 +15,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
@@ -23,13 +24,17 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import kotlinx.coroutines.flow.collectLatest
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
@@ -48,6 +53,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nathanxu.dayplanner.data.Goal
 import dev.nathanxu.dayplanner.data.Routine
 import dev.nathanxu.dayplanner.domain.Days
+import dev.nathanxu.dayplanner.domain.GoalDraft
+import dev.nathanxu.dayplanner.domain.QuickAdd
+import dev.nathanxu.dayplanner.domain.Tag
+import dev.nathanxu.dayplanner.domain.Tags
+import dev.nathanxu.dayplanner.domain.TaskDraft
+import java.time.LocalDate
 import dev.nathanxu.dayplanner.data.Task
 import java.time.format.DateTimeFormatter
 
@@ -121,6 +132,11 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     var editingTask by remember { mutableStateOf<Task?>(null) }
     var editingGoal by remember { mutableStateOf<Goal?>(null) }
     var creatingPlan by remember { mutableStateOf(false) }
+    var planPrefill by remember { mutableStateOf<GoalDraft?>(null) }
+    var planTitle by remember { mutableStateOf<String?>(null) }
+    var tasksSegment by rememberSaveable { mutableIntStateOf(0) }
+    val allTodos by vm.allTodos.collectAsStateWithLifecycle()
+    val finished by vm.finished.collectAsStateWithLifecycle()
     var editingRoutine by remember { mutableStateOf<Routine?>(null) }
 
     val snackbar = remember { SnackbarHostState() }
@@ -189,7 +205,8 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             testNotification = { vm.testNotification() },
         )
     }
-    val goalActions = remember(vm) {
+    // Not remembered: these capture today and tags, which change.
+    val goalActions = run {
         GoalActions(
             onLog = { vm.logGoal(it) },
             onUnlog = { vm.unlogGoal(it) },
@@ -200,11 +217,40 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             onToggleStep = { vm.toggle(it) },
             onEdit = { editingGoal = it },
             onEditStep = { editingTask = it },
+            onExpandStep = { g, text -> editingTask = draftTask(text, today, tags, vm).copy(goalId = g.id, category = g.category) },
+            onExtend = { g, d -> vm.extendGoal(g, d) },
         )
+    }
+    val todoActions = remember(vm) {
+        TodoActions(onToggle = { vm.toggle(it) }, onEdit = { editingTask = it }, onDelete = { vm.delete(it) })
+    }
+    val openPlanForm = { text: String ->
+        when (val p = QuickAdd.parse(text, today)) {
+            is GoalDraft -> { planPrefill = p; planTitle = null }
+            is TaskDraft -> { planPrefill = null; planTitle = p.title }
+            null -> { planPrefill = null; planTitle = null }
+        }
+        creatingPlan = true
+    }
+    /** Quick-add text → full to-do form; "@week" typed in the to-do box opens the task form instead. */
+    val openTodoForm = { text: String ->
+        if (QuickAdd.parse(text, today) is GoalDraft) {
+            openPlanForm(text)
+        } else {
+            editingTask = draftTask(text, today, tags, vm)
+        }
+        Unit
     }
 
     BackHandler(enabled = showSettings) { showSettings = false }
-    LaunchedEffect(Unit) { vm.messages.collect { snackbar.showSnackbar(it) } }
+    // A new message replaces the one showing (collectLatest cancels the old wait) instead of queueing.
+    LaunchedEffect(Unit) {
+        vm.snackbars.collectLatest { m ->
+            snackbar.currentSnackbarData?.dismiss()
+            val result = snackbar.showSnackbar(m.text, actionLabel = m.actionLabel, duration = SnackbarDuration.Short)
+            if (result == SnackbarResult.ActionPerformed) m.action?.invoke()
+        }
+    }
     LaunchedEffect(quickAddRequest) {
         if (quickAddRequest > 0) {
             showSettings = false
@@ -257,6 +303,24 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             }
         },
         snackbarHost = { SnackbarHost(snackbar) },
+        floatingActionButton = {
+            if (!showSettings) {
+                val (label, onClick) = when (tab) {
+                    Tab.TODAY -> "New to-do" to { editingTask = Task(title = "", date = today) }
+                    Tab.CALENDAR -> "New to-do" to { editingTask = Task(title = "", date = calView.selected) }
+                    Tab.GOALS -> if (tasksSegment == 0) "New task" to { openPlanForm("") }
+                    else "New to-do" to { editingTask = Task(title = "", date = today) }
+                    Tab.ROUTINES -> "New routine" to {
+                        editingRoutine = Routine(title = "", daysMask = Days.WEEKDAYS, syncToCalendar = true)
+                    }
+                }
+                ExtendedFloatingActionButton(
+                    onClick = onClick,
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text(label) },
+                )
+            }
+        },
     ) { padding ->
         if (showSettings) {
             SettingsScreen(
@@ -282,6 +346,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 onOpenGoals = { tab = Tab.GOALS },
                 quickAddFocus = quickAddFocus,
                 onQuickAdd = { vm.quickAdd(it) },
+                onExpandTodo = { openTodoForm(it) },
                 onToggle = { vm.toggle(it) },
                 onDelete = { vm.delete(it) },
                 onEditTask = { editingTask = it },
@@ -309,9 +374,15 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 today = today,
                 goals = goals,
                 tags = tags,
+                segment = tasksSegment,
+                onSegment = { tasksSegment = it },
+                finished = finished,
+                todos = allTodos,
                 onQuickAdd = { vm.quickAdd(it) },
-                onNew = { creatingPlan = true },
+                onExpandPlan = { openPlanForm(it) },
+                onExpandTodo = { openTodoForm(it) },
                 actions = goalActions,
+                todoActions = todoActions,
                 contentPadding = padding,
             )
             Tab.ROUTINES -> RoutinesScreen(
@@ -327,6 +398,14 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 onNew = {
                     editingRoutine = Routine(title = "", daysMask = Days.WEEKDAYS, syncToCalendar = true)
                 },
+                onExpand = { text, mask ->
+                    val d = QuickAdd.parse(text, today) as? TaskDraft
+                    editingRoutine = Routine(
+                        title = d?.title ?: "", daysMask = if (mask != 0) mask else Days.WEEKDAYS,
+                        time = d?.time, minutes = d?.minutes, category = tagKeyFor(d?.tag, tags, vm),
+                        syncToCalendar = true,
+                    )
+                },
                 syncStatus = syncStatus,
                 onOpenSettings = openSettings,
                 contentPadding = padding,
@@ -341,7 +420,10 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             task = t,
             goals = goals.map { it.goal },
             tagActions = tagActions,
-            onSave = { vm.updateTask(it); editingTask = null },
+            onSave = {
+                if (it.id == 0L) vm.createTask(it) else vm.updateTask(it)
+                editingTask = null
+            },
             onDelete = { vm.delete(it); editingTask = null },
             onDismiss = { editingTask = null },
         )
@@ -352,6 +434,8 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             today = today,
             tagActions = tagActions,
             onCreate = { vm.createPlan(it); creatingPlan = false },
+            prefill = if (editingGoal == null) planPrefill else null,
+            prefillTitle = if (editingGoal == null) planTitle else null,
             onSave = { vm.updateGoal(it); editingGoal = null },
             onDelete = { vm.deleteGoal(it); editingGoal = null },
             onDismiss = { creatingPlan = false; editingGoal = null },
@@ -370,4 +454,20 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             onDismiss = { editingRoutine = null },
         )
     }
+}
+
+/** Tag key for "#raw" typed before opening a form: an existing tag, a new one, or Other. */
+private fun tagKeyFor(raw: String?, tags: List<Tag>, vm: MainViewModel): String =
+    raw?.let { Tags.resolve(it, tags)?.key ?: vm.addTag(it.replaceFirstChar(Char::uppercase), null)?.key } ?: Tags.OTHER
+
+/** A new, unsaved to-do prefilled from quick-add text (empty text = blank form for today). */
+private fun draftTask(text: String, today: LocalDate, tags: List<Tag>, vm: MainViewModel): Task {
+    val d = QuickAdd.parse(text, today) as? TaskDraft
+    return Task(
+        title = d?.title ?: "",
+        date = if (d == null) today else d.date,
+        time = d?.time,
+        minutes = d?.minutes,
+        category = tagKeyFor(d?.tag, tags, vm),
+    )
 }

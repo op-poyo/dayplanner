@@ -44,6 +44,16 @@ interface TaskDao {
     )
     fun observeBetween(start: LocalDate, endExclusive: LocalDate): Flow<List<Task>>
 
+    /** Every open to-do (any date or none) plus ones ticked since [sinceMillis], for the To-dos view. */
+    @Query(
+        """
+        SELECT * FROM tasks WHERE $NOT_LOG AND (done = 0 OR doneAt >= :sinceMillis)
+        ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date ASC,
+        CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC, id ASC
+        """
+    )
+    fun observeAllTodos(sinceMillis: Long): Flow<List<Task>>
+
     @Insert suspend fun insert(task: Task): Long
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -111,6 +121,10 @@ interface GoalDao {
 
     @Query("SELECT * FROM goals WHERE archived = 0")
     suspend fun active(): List<Goal>
+
+    /** Plans that have ended (one-offs only; repeating ones live on as their next instance). */
+    @Query("SELECT * FROM goals WHERE archived = 1 AND recurring = 0 ORDER BY periodStart DESC LIMIT 30")
+    fun observeFinished(): Flow<List<Goal>>
 
     @Query("SELECT * FROM goals WHERE id = :id")
     suspend fun get(id: Long): Goal?

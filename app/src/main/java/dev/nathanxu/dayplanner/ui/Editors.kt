@@ -15,7 +15,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.material3.Button
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
@@ -183,6 +187,7 @@ private fun TitleField(value: String, onChange: (String) -> Unit) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun EditorDialog(
     title: String,
@@ -193,20 +198,35 @@ private fun EditorDialog(
     saveLabel: String = "Save",
     content: @Composable () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = { Column(Modifier.verticalScroll(rememberScrollState())) { content() } },
-        confirmButton = { TextButton(onClick = onSave, enabled = canSave) { Text(saveLabel) } },
-        dismissButton = {
-            Row {
-                if (onDelete != null) {
-                    TextButton(onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-                }
-                TextButton(onClick = onDismiss) { Text("Cancel") }
+    // A bottom sheet rather than a dialog: more room, sits above the keyboard, and the list
+    // stays visible behind it (the "task expands into a card" feel).
+    val sheet = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheet) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+            Text(
+                title, Modifier.weight(1f),
+                style = MaterialTheme.typography.titleMedium,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+            Button(onClick = onSave, enabled = canSave) { Text(saveLabel) }
+        }
+        Column(
+            Modifier.fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .imePadding()
+                .padding(start = 20.dp, end = 20.dp, top = 8.dp, bottom = 32.dp),
+        ) {
+            content()
+            if (onDelete != null) {
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = onDelete) { Text("Delete", color = MaterialTheme.colorScheme.error) }
             }
-        },
-    )
+        }
+    }
 }
 
 // ---------- task ----------
@@ -228,14 +248,20 @@ fun TaskEditor(
     var tag by remember(task.id) { mutableStateOf(task.category) }
     var goalId by remember(task.id) { mutableStateOf(task.goalId) }
 
+    val isNew = task.id == 0L
     EditorDialog(
-        title = "Edit to-do",
+        title = when {
+            !isNew -> "Edit to-do"
+            task.goalId != null -> "New step"
+            else -> "New to-do"
+        },
+        saveLabel = if (isNew) "Add" else "Save",
         canSave = title.isNotBlank(),
         onSave = {
             onSave(task.copy(title = title.trim(), date = date, time = time, minutes = minutes?.takeIf { it > 0 }, category = tag, goalId = goalId))
         },
         onDismiss = onDismiss,
-        onDelete = { onDelete(task) },
+        onDelete = if (isNew) null else ({ onDelete(task) }),
     ) {
         TitleField(title) { title = it }
         DateField("Date", date, { date = it })
@@ -276,20 +302,25 @@ fun PlanEditor(
     today: LocalDate,
     tagActions: TagActions,
     onCreate: (PlanDraft) -> Unit,
+    /** Prefill for a new task, from text typed into the quick-add line. */
+    prefill: dev.nathanxu.dayplanner.domain.GoalDraft? = null,
+    prefillTitle: String? = null,
     onSave: (Goal) -> Unit,
     onDelete: (Goal) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val key = goal?.id ?: -1L
-    var title by remember(key) { mutableStateOf(goal?.title ?: "") }
+    var title by remember(key) { mutableStateOf(goal?.title ?: prefill?.title ?: prefillTitle ?: "") }
     var tag by remember(key) { mutableStateOf(goal?.category ?: Tags.OTHER) }
+    // "@week"/"@month" typed before expanding sets the range to this week/month.
+    val prefillEnd = prefill?.period?.let { p -> p.lastDay(p.startOf(today)) }
     var start by remember(key) { mutableStateOf(goal?.start ?: today) }
-    var end by remember(key) { mutableStateOf(goal?.end ?: today.plusDays(6)) }
+    var end by remember(key) { mutableStateOf(goal?.end ?: prefillEnd ?: today.plusDays(6)) }
     var startTime by remember(key) { mutableStateOf<LocalTime?>(null) }
     var endTime by remember(key) { mutableStateOf<LocalTime?>(null) }
-    var target by remember(key) { mutableIntStateOf(goal?.target ?: 1) }
+    var target by remember(key) { mutableIntStateOf(goal?.target ?: prefill?.target ?: 1) }
     var cadence by remember(key) { mutableStateOf(goal?.effectiveCadence ?: Cadence.DAILY) }
-    var recurring by remember(key) { mutableStateOf(goal?.recurring ?: false) }
+    var recurring by remember(key) { mutableStateOf(goal?.recurring ?: prefill?.recurring ?: false) }
 
     val singleDay = start == end
     val valid = title.isNotBlank() && !end.isBefore(start) && target >= 1

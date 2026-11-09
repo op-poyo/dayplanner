@@ -21,7 +21,15 @@ import dev.nathanxu.dayplanner.notify.Notifier
 import dev.nathanxu.dayplanner.notify.ScheduledAlert
 import dev.nathanxu.dayplanner.repository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import android.database.ContentObserver
+import android.os.Handler
+import android.os.Looper
+import android.provider.CalendarContract
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -34,6 +42,9 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.YearMonth
+
+/** A snackbar message, optionally with an action such as Undo. */
+data class UiMessage(val text: String, val actionLabel: String? = null, val action: (() -> Unit)? = null)
 
 /** Notification health for the Travel & alerts settings tab. */
 data class AlertState(
@@ -85,7 +96,55 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
     private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val messages = _messages.asSharedFlow()
+    private val _undo = MutableSharedFlow<UiMessage>(extraBufferCapacity = 4)
+
+    /** Everything the snackbar shows. A new message replaces the current one rather than queueing. */
+    val snackbars: Flow<UiMessage> = merge(_messages.map { UiMessage(it) }, _undo)
+
+    private fun offerUndo(text: String, undo: suspend () -> Unit) {
+        _undo.tryEmit(UiMessage(text, "Undo") { viewModelScope.launch { undo() } })
+    }
+
+    // ---------- lists ----------
+
+    /** All open to-dos plus those ticked in the last week. */
+    val allTodos: StateFlow<List<Task>> =
+        repo.observeAllTodos(System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000)
+            .stateIn(viewModelScope, started, emptyList())
+    val finished: StateFlow<List<GoalProgress>> =
+        _today.flatMapLatest { repo.observeFinished(it) }.stateIn(viewModelScope, started, emptyList())
+
+    // ---------- calendar change watching ----------
+
+    private var calendarObserverOn = false
+    private var reloadJob: Job? = null
+    private val calendarObserver = object : ContentObserver(Handler(Looper.getMainLooper())) {
+        override fun onChange(selfChange: Boolean) {
+            // The provider fires in bursts while syncing; wait for it to settle, then reload once.
+            reloadJob?.cancel()
+            reloadJob = viewModelScope.launch {
+                delay(1500)
+                _plan.value = runCatching { repo.todayPlan() }.getOrNull() ?: _plan.value
+                loadCalendarRange()
+                repo.refreshWidget()
+                repo.scheduleAlerts()
+            }
+        }
+    }
+
+    /** Watches the phone's calendar so Google Calendar edits appear without reopening the app. */
+    private fun watchCalendar() {
+        if (calendarObserverOn || !repo.calendar.hasPermission()) return
+        calendarObserverOn = runCatching {
+            getApplication<Application>().contentResolver
+                .registerContentObserver(CalendarContract.CONTENT_URI, true, calendarObserver)
+        }.isSuccess
+    }
+
+    override fun onCleared() {
+        if (calendarObserverOn) getApplication<Application>().contentResolver.unregisterContentObserver(calendarObserver)
+        super.onCleared()
+    }
 
     private val _canWriteCalendar = MutableStateFlow(repo.calendar.hasWritePermission())
     val canWriteCalendar: StateFlow<Boolean> = _canWriteCalendar.asStateFlow()
@@ -251,6 +310,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- lifecycle ----------
 
     fun refresh() = viewModelScope.launch {
+        watchCalendar()
+        if (repo.calendar.hasPermission()) repo.requestCalendarSync()
         val d = LocalDate.now()
         _today.value = d
         _canWriteCalendar.value = repo.calendar.hasWritePermission()
@@ -282,22 +343,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _messages.emit("Saved “${task.title}”")
     }
 
+    fun createTask(task: Task) = viewModelScope.launch { _messages.emit(repo.createTask(task)) }
+
     fun delete(task: Task) = viewModelScope.launch {
         repo.deleteTask(task.id)
-        _messages.emit("Deleted “${task.title}”")
+        offerUndo("Deleted “${task.title}”") { repo.restoreTask(task) }
     }
 
     // ---------- goals ----------
 
     fun logGoal(goal: Goal) = viewModelScope.launch { repo.logGoal(goal, _today.value) }
-    fun unlogGoal(goal: Goal) = viewModelScope.launch { _messages.emit(repo.unlogGoal(goal, _today.value)) }
+    fun unlogGoal(goal: Goal) = viewModelScope.launch {
+        repo.unlogGoal(goal, _today.value).takeIf { it.isNotEmpty() }?.let { _messages.emit(it) }
+    }
+    fun extendGoal(goal: Goal, newEnd: LocalDate) = viewModelScope.launch {
+        _messages.emit(repo.extendGoal(goal, newEnd, _today.value))
+    }
     fun setRecurring(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setRecurring(goal, on) }
     fun setSplit(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setSplit(goal, on, _today.value) }
     fun updateGoal(goal: Goal) = viewModelScope.launch {
         repo.updateGoal(goal, _today.value)
         _messages.emit("Saved “${goal.title}”")
     }
-    fun deleteGoal(goal: Goal) = viewModelScope.launch { repo.deleteGoal(goal) }
+    fun deleteGoal(goal: Goal) = viewModelScope.launch {
+        repo.deleteGoal(goal)
+        offerUndo("Deleted “${goal.title}”") { repo.restoreGoal(goal, _today.value) }
+    }
     fun createPlan(draft: PlanDraft) = viewModelScope.launch {
         _messages.emit(repo.createPlan(draft, _today.value))
     }
@@ -324,5 +395,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         repo.setRoutineSync(r, on)?.let { _messages.emit(it) }
     }
     fun setRoutineActive(r: Routine, on: Boolean) = viewModelScope.launch { repo.setRoutineActive(r, on) }
-    fun deleteRoutine(r: Routine) = viewModelScope.launch { repo.deleteRoutine(r) }
+    fun deleteRoutine(r: Routine) = viewModelScope.launch {
+        repo.deleteRoutine(r)
+        offerUndo("Deleted “${r.title}”") { repo.restoreRoutine(r, _today.value) }
+    }
 }

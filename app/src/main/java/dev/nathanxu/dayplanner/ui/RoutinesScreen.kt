@@ -57,6 +57,8 @@ fun RoutinesScreen(
     onDelete: (Routine) -> Unit,
     onEdit: (Routine) -> Unit,
     onNew: () -> Unit,
+    /** Full form prefilled from the typed text and the chosen days. */
+    onExpand: (String, Int) -> Unit,
     syncStatus: SyncStatus?,
     onOpenSettings: () -> Unit,
     contentPadding: PaddingValues,
@@ -69,7 +71,7 @@ fun RoutinesScreen(
         contentPadding = PaddingValues(
             start = 16.dp, end = 16.dp,
             top = contentPadding.calculateTopPadding() + 8.dp,
-            bottom = contentPadding.calculateBottomPadding() + 24.dp,
+            bottom = contentPadding.calculateBottomPadding() + 88.dp,
         ),
     ) {
         if (needsPermission) item {
@@ -91,9 +93,8 @@ fun RoutinesScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
             )
-            Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) { Text("New routine") }
             Text(
-                "Or type it — pick days, then e.g. “Gym 18:00 1h #exercise”:",
+                "Tap New routine for the full form, or pick days and type it, e.g. “Gym 18:00 1h #exercise”:",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
@@ -125,6 +126,7 @@ fun RoutinesScreen(
                     if (sync && !canWriteCalendar) onRequestCalendar()
                     onAdd(it, mask, sync)
                 },
+                onExpand = { onExpand(it, mask) },
                 modifier = Modifier.padding(top = 4.dp),
             )
             Text(
