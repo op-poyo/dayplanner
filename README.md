@@ -1,4 +1,4 @@
-# DayPlanner v1.3
+# DayPlanner v1.4
 
 Personal Android planner: Google Calendar timeline with travel times, daily tasks, weekly/monthly goals, routines, and a home-screen widget. Local-first, no server. See `PLAN.md` for the design and its self-review.
 
@@ -9,17 +9,18 @@ Personal Android planner: Google Calendar timeline with travel times, daily task
 3. Press ▶ Run. Grant calendar access (read + write) when you tap **Connect calendar**.
 4. Add the widget: long-press home screen → Widgets → DayPlanner → *Today*.
 
-### Travel times (optional)
+### Travel times (optional, needed for leave-now alerts)
 
 1. console.cloud.google.com → new project → enable **Routes API** → Credentials → *Create API key*.
-2. Restrict the key: **API restrictions → Routes API only**. Optionally *Application restrictions → Android apps* with package `dev.nathanxu.dayplanner` and your debug SHA-1 (`./gradlew signingReport`).
-3. Add to `local.properties` (already git-ignored):
-   ```
-   MAPS_API_KEY=your_key_here
-   ```
-4. Rebuild. Travel legs appear between consecutive events that have different locations. Results cache for 7 days, so cost stays negligible.
+2. Lock the key down (the APK is public, so the key can be extracted from it):
+   - **API restrictions → Routes API** only.
+   - **Application restrictions → Android apps**: package `dev.nathanxu.dayplanner`, SHA-1 `D7:D2:ED:DC:CF:92:97:B7:7C:E3:F9:52:6E:8F:06:B7:04:1F:90:F2`.
+   - **Quotas → Routes API → Compute Routes requests per day**: cap it (e.g. 200). Personal use is a few dozen a day thanks to the 7-day cache.
+3. GitHub → repo **Settings → Secrets and variables → Actions → New repository secret**: name `MAPS_API_KEY`, value = the key. CI adds it to every build.
+   (Building locally instead: put `MAPS_API_KEY=...` in `local.properties`.)
+4. Push anything (or re-run the workflow) and install the new APK.
 
-Locations come from the event's location field in Google Calendar, so put real addresses or place names there ("Roberts Building, UCL").
+Locations come from each event's location field in Google Calendar, so put real addresses or place names there ("Roberts Building, UCL").
 
 ## Using it
 
@@ -47,6 +48,16 @@ One box adds everything:
 - A routine with a time becomes a weekly recurring event in your Google account's main calendar (written through Android's calendar provider; Google's sync uploads it — no OAuth).
 - Pause a routine, turn its 📅 off, or delete it, and the event is removed. If you delete the event in Google Calendar yourself, the app stops syncing that routine instead of re-creating it.
 - The app is the source of truth: edits made to the event in Google Calendar aren't read back.
+
+### v1.4: travel and alerts
+
+Settings ⚙ → **Travel**:
+- **Home address**: the first journey of the day starts here (shown on Today's schedule too).
+- **Travel by**: public transport, walk, cycle or drive. **Buffer**: extra minutes before leaving.
+- **Leave-now alerts**: a notification at event start − travel − buffer, for events with a location (needs travel times).
+- **Morning summary** at a time you choose: event count, first event, to-dos.
+- **Send test notification**, plus a list of what's scheduled today.
+Alerts are re-planned whenever you open the app, daily at 04:30, and after a reboot or update.
 
 ### v1.3 at a glance
 
@@ -89,7 +100,7 @@ Tap anything to edit it: tasks (title, date, time, duration, category, goal), go
 ```
 ./gradlew test
 ```
-46 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), breakdown buckets, tags, routine clashes, periods and weekday masks.
+54 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), breakdown buckets, tags, routine clashes, travel legs from home, leave-alert timing, morning summary, periods and weekday masks.
 
 ## Project layout
 

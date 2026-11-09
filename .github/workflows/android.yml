@@ -23,6 +23,18 @@ jobs:
       # GitHub's Ubuntu runners ship the Android SDK; AGP fetches platform 35 if missing.
       - uses: gradle/actions/setup-gradle@v4
 
+      # Optional: add a repository secret MAPS_API_KEY to switch on travel times / leave-now alerts.
+      - name: Maps API key
+        env:
+          MAPS_API_KEY: ${{ secrets.MAPS_API_KEY }}
+        run: |
+          if [ -n "$MAPS_API_KEY" ]; then
+            echo "MAPS_API_KEY=$MAPS_API_KEY" >> local.properties
+            echo "Maps key added - travel times on"
+          else
+            echo "No MAPS_API_KEY secret - travel times off"
+          fi
+
       - name: Unit tests
         run: chmod +x gradlew && ./gradlew --no-daemon testDebugUnitTest
 

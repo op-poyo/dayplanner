@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.glance.appwidget.updateAll
 import dev.nathanxu.dayplanner.calendar.CalInfo
 import dev.nathanxu.dayplanner.calendar.CalendarSource
+import dev.nathanxu.dayplanner.notify.AlertScheduler
+import dev.nathanxu.dayplanner.domain.AlertPlanner
 import dev.nathanxu.dayplanner.domain.Busy
 import dev.nathanxu.dayplanner.domain.CalEvent
 import dev.nathanxu.dayplanner.domain.CalendarLayout
@@ -22,6 +24,7 @@ import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.TaskDraft
 import dev.nathanxu.dayplanner.domain.TimelineItem
 import dev.nathanxu.dayplanner.domain.later
+import dev.nathanxu.dayplanner.travel.TravelMode
 import dev.nathanxu.dayplanner.travel.TravelService
 import dev.nathanxu.dayplanner.widget.TodayWidget
 import kotlinx.coroutines.flow.Flow
@@ -76,6 +79,7 @@ class Repository(
     private val travel: TravelService,
     val settings: Settings,
     val tags: TagStore,
+    val alerts: AlertScheduler,
 ) {
     private val dayFmt = DateTimeFormatter.ofPattern("EEE d MMM")
     private val hm = DateTimeFormatter.ofPattern("HH:mm")
@@ -610,13 +614,54 @@ class Repository(
         val cals = calendar.calendars()
         val needsChoice = settings.current.accounts == null && googleAccounts(cals).size > 1
         val events = calendar.eventsOn(today, readCalendarIds())
-        val minutes = DayPlan.travelLegs(events).associateWith { (a, b) -> travel.minutes(a, b) }
+        val home = settings.current.home
+        val minutes = travelMinutes(events, home)
 
         val windowStart = later(now.withSecond(0).withNano(0), today.atTime(LocalTime.of(7, 0)))
         val windowEnd = later(windowStart, today.atTime(LocalTime.of(23, 0)))
-        val items = DayPlan.buildTimeline(events, { a, b -> minutes[a to b] }, windowStart, windowEnd)
+        val items = DayPlan.buildTimeline(events, { a, b -> minutes[a to b] }, windowStart, windowEnd, home = home)
         val next = events.filter { !it.allDay && it.end.isAfter(now) }.minByOrNull { it.start }
         return TodayPlan(items, true, travel.enabled, next, needsChoice)
+    }
+
+    val travelEnabled: Boolean get() = travel.enabled
+
+    /** Travel time for every journey the day needs, in your chosen mode (cached for 7 days). */
+    private suspend fun travelMinutes(events: List<CalEvent>, home: String?): Map<Pair<String, String>, Int?> {
+        val mode = runCatching { TravelMode.valueOf(settings.current.travelMode) }.getOrDefault(TravelMode.TRANSIT)
+        return DayPlan.travelLegs(events, home).associateWith { (a, b) -> travel.minutes(a, b, mode) }
+    }
+
+    // ---------- notifications ----------
+
+    /**
+     * Re-plans today's alarms: a "leave now" for every journey with a known travel time, and the
+     * next morning summary. Called on app open, after settings changes, daily at 04:30, and after
+     * a reboot or update.
+     */
+    suspend fun scheduleAlerts(now: LocalDateTime = LocalDateTime.now()) {
+        val s = settings.current
+        val today = now.toLocalDate()
+        val leave = if (s.leaveAlerts && calendar.hasPermission()) {
+            val events = runCatching { eventsBetween(today, today.plusDays(1)) }.getOrDefault(emptyList())
+            val minutes = travelMinutes(events, s.home)
+            AlertPlanner.leaveAlerts(events, s.home, { a, b -> minutes[a to b] }, s.bufferMinutes, now)
+        } else emptyList()
+        val morning = if (s.morningSummary) {
+            AlertPlanner.morningAt(today, s.morningTime, now) ?: AlertPlanner.morningAt(today.plusDays(1), s.morningTime, now)
+        } else null
+        alerts.replaceAll(leave, morning)
+    }
+
+    /** Built when the morning notification fires, so it reflects the day as it is then. */
+    suspend fun morningSummary(): Pair<String, String> {
+        val today = LocalDate.now()
+        ensureFor(today)
+        val events = runCatching { eventsBetween(today, today.plusDays(1)) }.getOrDefault(emptyList())
+        val todos = db.tasks().today(today)
+            .filter { !it.done }
+            .map { it.title + if (it.units > 1) " ×${it.units}" else "" }
+        return AlertPlanner.summary(events, todos)
     }
 
     suspend fun refreshWidget() {

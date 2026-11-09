@@ -122,7 +122,16 @@ Ordered by importance:
 7. **4-wide split widget**, **today highlight**, **syntax help tab**.
 - Room migration 2→3 (two nullable columns), verified against SQLite with Room's expected schema. No more destructive resets.
 
-## 12. Roadmap
+## 12. v1.4 changes
+
+- Travel settings: home address (first leg of the day), mode, buffer. Travel legs generalised (`DayPlan.legs`), tested.
+- Leave-now alerts at start − travel − buffer (exact alarms via USE_EXACT_ALARM, inexact fallback); morning summary built at fire time; daily 04:30 re-plan; re-plan on boot/update/permission change.
+- Settings → Travel tab with permission checks, test notification and the day's scheduled alerts.
+- CI injects an optional `MAPS_API_KEY` secret.
+- Known limit: alerts are planned for today only; the 04:30 refresh plans the next day. Events added on another device show up at the next app open or refresh.
+- Next: the auto-scheduler (place to-dos into free slots), then Health Connect exercise.
+
+## 13. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

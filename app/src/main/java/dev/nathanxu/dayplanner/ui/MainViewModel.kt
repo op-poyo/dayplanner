@@ -17,6 +17,8 @@ import dev.nathanxu.dayplanner.domain.CalendarMode
 import dev.nathanxu.dayplanner.domain.DaySegment
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
+import dev.nathanxu.dayplanner.notify.Notifier
+import dev.nathanxu.dayplanner.notify.ScheduledAlert
 import dev.nathanxu.dayplanner.repository
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -32,6 +34,13 @@ import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.YearMonth
+
+/** Notification health for the Travel & alerts settings tab. */
+data class AlertState(
+    val notificationsOn: Boolean = false,
+    val exactAlarms: Boolean = true,
+    val upcoming: List<ScheduledAlert> = emptyList(),
+)
 
 /** What the Calendar page is showing. [selected] is the highlighted day in month view. */
 data class CalendarView(
@@ -119,6 +128,50 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun syncNow() = viewModelScope.launch { _messages.emit(repo.syncRoutines().message) }
+
+    // ---------- travel & alerts ----------
+
+    val travelEnabled: Boolean get() = repo.travelEnabled
+
+    private val _alertState = MutableStateFlow(AlertState())
+    val alertState: StateFlow<AlertState> = _alertState.asStateFlow()
+
+    private fun readAlertState() {
+        val ctx = getApplication<Application>()
+        _alertState.value = AlertState(
+            notificationsOn = Notifier.enabled(ctx),
+            exactAlarms = repo.alerts.canExact(),
+            upcoming = repo.alerts.upcoming(),
+        )
+    }
+
+    /** Applies a travel/alert setting, then re-plans alarms (and the schedule, for travel changes). */
+    fun updateTravel(transform: (SettingsState) -> SettingsState) = viewModelScope.launch {
+        val before = repo.settings.current
+        repo.settings.update(transform)
+        val after = repo.settings.current
+        if (before.home != after.home || before.travelMode != after.travelMode) {
+            _plan.value = runCatching { repo.todayPlan() }.getOrNull()
+        }
+        repo.scheduleAlerts()
+        readAlertState()
+    }
+
+    fun rescheduleAlerts() = viewModelScope.launch {
+        repo.scheduleAlerts()
+        readAlertState()
+    }
+
+    fun testNotification() {
+        val ctx = getApplication<Application>()
+        val next = repo.alerts.upcoming().firstOrNull()
+        val ok = Notifier.post(
+            ctx, 1, Notifier.CH_LEAVE, "DayPlanner test",
+            "Notifications work." + (next?.let { " Next: ${it.title} at ${it.at.toLocalTime().withSecond(0).withNano(0)}" } ?: ""),
+        )
+        if (!ok) _messages.tryEmit("Notifications are off for DayPlanner — allow them first")
+        readAlertState()
+    }
 
     // ---------- tags ----------
 
@@ -212,6 +265,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _loading.value = false
         loadCalendarRange()
         _calendars.value = repo.calendars()
+        repo.scheduleAlerts()
+        readAlertState()
     }
 
     // ---------- tasks ----------

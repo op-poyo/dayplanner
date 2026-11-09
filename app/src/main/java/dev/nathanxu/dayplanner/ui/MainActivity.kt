@@ -2,7 +2,11 @@ package dev.nathanxu.dayplanner.ui
 
 import android.Manifest
 import android.content.Intent
+import android.content.Context
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.Settings as AndroidSettings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -37,6 +41,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.platform.LocalContext
+import dev.nathanxu.dayplanner.notify.Notifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nathanxu.dayplanner.data.Goal
@@ -106,6 +112,8 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     val calEvents by vm.calEvents.collectAsStateWithLifecycle()
     val calTasks by vm.calTasks.collectAsStateWithLifecycle()
     val tags by vm.tags.collectAsStateWithLifecycle()
+    val alertState by vm.alertState.collectAsStateWithLifecycle()
+    val context = LocalContext.current
 
     var tab by rememberSaveable { mutableStateOf(Tab.TODAY) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
@@ -126,7 +134,21 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     }
     val openSettings = {
         vm.loadCalendars()
+        vm.rescheduleAlerts()
         showSettings = true
+    }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        vm.rescheduleAlerts()
+    }
+    // Ask for notifications once (Android 13+), since leave-now alerts are on by default.
+    LaunchedEffect(Unit) {
+        val prefs = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !Notifier.hasPermission(context) &&
+            !prefs.getBoolean("asked_notifications", false)
+        ) {
+            prefs.edit().putBoolean("asked_notifications", true).apply()
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
     }
     val tagActions = TagActions(tags) { name, color -> vm.addTag(name, color) }
     val settingsActions = remember(vm) {
@@ -140,6 +162,30 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             addTag = { name, color -> vm.addTag(name, color) },
             updateTag = { vm.updateTag(it) },
             deleteTag = { vm.deleteTag(it) },
+            updateTravel = { transform -> vm.updateTravel(transform) },
+            requestNotifications = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !Notifier.hasPermission(context)) {
+                    notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    // Permission granted but notifications switched off: open the app's notification settings.
+                    context.startActivity(
+                        Intent(AndroidSettings.ACTION_APP_NOTIFICATION_SETTINGS)
+                            .putExtra(AndroidSettings.EXTRA_APP_PACKAGE, context.packageName)
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            },
+            openExactAlarmSettings = {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    runCatching {
+                        context.startActivity(
+                            Intent(AndroidSettings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:" + context.packageName))
+                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        )
+                    }
+                }
+            },
+            testNotification = { vm.testNotification() },
         )
     }
     val goalActions = remember(vm) {
@@ -217,6 +263,8 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 syncStatus = syncStatus,
                 canWriteCalendar = canWriteCalendar,
                 tags = tags,
+                travelEnabled = vm.travelEnabled,
+                alertState = alertState,
                 actions = settingsActions,
                 contentPadding = padding,
             )

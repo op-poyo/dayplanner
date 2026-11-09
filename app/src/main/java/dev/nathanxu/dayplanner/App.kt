@@ -9,6 +9,8 @@ import dev.nathanxu.dayplanner.data.AppDatabase
 import dev.nathanxu.dayplanner.data.Repository
 import dev.nathanxu.dayplanner.data.Settings
 import dev.nathanxu.dayplanner.data.TagStore
+import dev.nathanxu.dayplanner.notify.AlertScheduler
+import dev.nathanxu.dayplanner.notify.Notifier
 import dev.nathanxu.dayplanner.travel.TravelService
 import java.security.MessageDigest
 
@@ -18,6 +20,7 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        Notifier.ensureChannels(this)
         val db = AppDatabase.build(this)
         repository = Repository(
             context = this,
@@ -26,6 +29,7 @@ class App : Application() {
             travel = TravelService(db.travel(), BuildConfig.MAPS_API_KEY, packageName, signingSha1()),
             settings = Settings(this),
             tags = TagStore(this),
+            alerts = AlertScheduler(this),
         )
     }
 
