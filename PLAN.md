@@ -131,7 +131,13 @@ Ordered by importance:
 - Known limit: alerts are planned for today only; the 04:30 refresh plans the next day. Events added on another device show up at the next app open or refresh.
 - Next: the auto-scheduler (place to-dos into free slots), then Health Connect exercise.
 
-## 13. Roadmap
+## 13. v1.5 changes
+
+- Progress can go down: −1 / Undo on plan cards (removes the latest log, or unticks the latest to-do/step; a partly-ticked ×n to-do gets its unit back).
+- Routine creation form with live clash check before saving; end time and duration kept in sync.
+- Next: auto-scheduler.
+
+## 14. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

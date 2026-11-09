@@ -1,4 +1,4 @@
-# DayPlanner v1.4
+# DayPlanner v1.5
 
 Personal Android planner: Google Calendar timeline with travel times, daily tasks, weekly/monthly goals, routines, and a home-screen widget. Local-first, no server. See `PLAN.md` for the design and its self-review.
 
@@ -48,6 +48,11 @@ One box adds everything:
 - A routine with a time becomes a weekly recurring event in your Google account's main calendar (written through Android's calendar provider; Google's sync uploads it — no OAuth).
 - Pause a routine, turn its 📅 off, or delete it, and the event is removed. If you delete the event in Google Calendar yourself, the app stops syncing that routine instead of re-creating it.
 - The app is the source of truth: edits made to the event in Google Calendar aren't read back.
+
+### v1.5
+
+- **−1 / Undo** on long-term task cards takes back the latest progress (a +1, a tick or a ticked step).
+- **New routine** form: name, days (with Weekdays / Every day / Weekends), start time, end time *or* duration, tag, calendar sync. Clashes are checked live, before you create it. The one-line box still works.
 
 ### v1.4: travel and alerts
 

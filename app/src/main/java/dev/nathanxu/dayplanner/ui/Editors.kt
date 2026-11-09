@@ -149,6 +149,10 @@ private fun TimeField(label: String, time: LocalTime?, onChange: (LocalTime?) ->
 @Composable
 private fun NumberField(label: String, value: Int?, onChange: (Int?) -> Unit, suffix: String = "") {
     var text by remember { mutableStateOf(value?.toString() ?: "") }
+    // Follow changes made elsewhere (e.g. picking an end time recalculates the duration).
+    LaunchedEffect(value) {
+        if ((text.toIntOrNull() ?: 0) != (value ?: 0)) text = value?.toString() ?: ""
+    }
     OutlinedTextField(
         value = text,
         onValueChange = { t ->
@@ -384,19 +388,21 @@ fun RoutineEditor(
     var sync by remember(routine.id) { mutableStateOf(routine.syncToCalendar) }
     var active by remember(routine.id) { mutableStateOf(routine.active) }
     var clashes by remember(routine.id) { mutableStateOf<List<String>>(emptyList()) }
+    val isNew = routine.id == 0L
 
     // Re-check whenever the slot changes (debounced so typing a duration doesn't spam queries).
     LaunchedEffect(mask, time, minutes) {
         val t = time
         clashes = if (t == null || mask == 0) emptyList() else {
             delay(300)
-            checkClashes(mask, t, minutes ?: 30, routine.id)
+            checkClashes(mask, t, minutes ?: 30, if (isNew) null else routine.id)
         }
     }
 
     EditorDialog(
-        title = "Edit routine",
+        title = if (isNew) "New routine" else "Edit routine",
         canSave = title.isNotBlank() && mask != 0,
+        saveLabel = if (isNew) "Create" else "Save",
         onSave = {
             onSave(
                 routine.copy(
@@ -406,17 +412,48 @@ fun RoutineEditor(
             )
         },
         onDismiss = onDismiss,
-        onDelete = { onDelete(routine) },
+        onDelete = if (isNew) null else ({ onDelete(routine) }),
     ) {
-        TitleField(title) { title = it }
+        OutlinedTextField(
+            value = title, onValueChange = { title = it }, label = { Text("Name") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+        )
         FieldLabel("Days")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             DayOfWeek.entries.forEach { d ->
                 FilterChip(selected = Days.has(mask, d), onClick = { mask = Days.toggle(mask, d) }, label = { Text(d.name.take(1)) })
             }
         }
-        TimeField("Time", time) { time = it }
-        NumberField("Duration", minutes, { minutes = it }, suffix = "min")
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            AssistChip(onClick = { mask = Days.WEEKDAYS }, label = { Text("Weekdays") })
+            AssistChip(onClick = { mask = Days.ALL }, label = { Text("Every day") })
+            AssistChip(onClick = { mask = 0b1100000 }, label = { Text("Weekends") })
+        }
+        Row {
+            Column(Modifier.weight(1f)) {
+                TimeField("Start time", time) { t ->
+                    time = t
+                    if (t != null && minutes == null) minutes = 30
+                }
+            }
+            Column(Modifier.weight(1f)) {
+                val end = time?.let { t -> minutes?.let { t.plusMinutes(it.toLong()) } }
+                TimeField("End time", end) { e ->
+                    val t = time
+                    minutes = when {
+                        e == null -> null
+                        t == null -> {
+                            // End picked first: assume an hour before it.
+                            time = e.minusHours(1)
+                            60
+                        }
+                        e.isAfter(t) -> java.time.Duration.between(t, e).toMinutes().toInt()
+                        else -> minutes
+                    }
+                }
+            }
+        }
+        NumberField("or duration", minutes, { minutes = it }, suffix = "min")
         if (clashes.isNotEmpty()) {
             Text(
                 "⚠ Clashes in the next 4 weeks:\n" + clashes.joinToString("\n"),
@@ -424,15 +461,22 @@ fun RoutineEditor(
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(top = 8.dp),
             )
+        } else if (time != null && mask != 0) {
+            Text(
+                "✓ No clashes in the next 4 weeks",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 8.dp),
+            )
         }
         TagPicker(tag, tagActions) { tag = it }
         SwitchRow("Add to Google Calendar", sync) { sync = it }
         if (sync && time == null) {
             Text(
-                "Needs a time to appear in the calendar.",
+                "Needs a start time to appear in the calendar.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error,
             )
         }
-        SwitchRow("Active", active) { active = it }
+        if (!isNew) SwitchRow("Active", active) { active = it }
     }
 }

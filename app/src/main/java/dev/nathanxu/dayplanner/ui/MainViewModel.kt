@@ -290,6 +290,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- goals ----------
 
     fun logGoal(goal: Goal) = viewModelScope.launch { repo.logGoal(goal, _today.value) }
+    fun unlogGoal(goal: Goal) = viewModelScope.launch { _messages.emit(repo.unlogGoal(goal, _today.value)) }
     fun setRecurring(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setRecurring(goal, on) }
     fun setSplit(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setSplit(goal, on, _today.value) }
     fun updateGoal(goal: Goal) = viewModelScope.launch {
@@ -308,6 +309,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addRoutine(text: String, mask: Int, sync: Boolean) = viewModelScope.launch {
         _messages.emit(repo.addRoutine(text, mask, sync, _today.value))
+    }
+    fun createRoutine(r: Routine) = viewModelScope.launch {
+        _messages.emit(repo.createRoutine(r, _today.value))
     }
     fun updateRoutine(r: Routine) = viewModelScope.launch {
         _messages.emit(repo.updateRoutine(r, _today.value))

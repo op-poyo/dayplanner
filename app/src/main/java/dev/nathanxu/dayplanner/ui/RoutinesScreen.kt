@@ -56,6 +56,7 @@ fun RoutinesScreen(
     onSetSync: (Routine, Boolean) -> Unit,
     onDelete: (Routine) -> Unit,
     onEdit: (Routine) -> Unit,
+    onNew: () -> Unit,
     syncStatus: SyncStatus?,
     onOpenSettings: () -> Unit,
     contentPadding: PaddingValues,
@@ -89,6 +90,13 @@ fun RoutinesScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = 8.dp),
+            )
+            Button(onClick = onNew, modifier = Modifier.fillMaxWidth()) { Text("New routine") }
+            Text(
+                "Or type it — pick days, then e.g. “Gym 18:00 1h #exercise”:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp),
             )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 DayOfWeek.entries.forEach { day ->

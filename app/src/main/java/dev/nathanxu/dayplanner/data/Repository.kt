@@ -392,6 +392,27 @@ class Repository(
         refreshWidget()
     }
 
+    /**
+     * "−1": takes back the most recent unit of progress. A +1 log is removed (and if it came from
+     * partly ticking today's ×n to-do, that to-do gets its unit back); a ticked to-do or step is
+     * unticked.
+     */
+    suspend fun unlogGoal(goal: Goal, today: LocalDate): String {
+        val t = db.tasks().latestDoneForGoal(goal.id) ?: return "Nothing to take back on ${goal.title}"
+        if (t.genKey?.startsWith("l:") == true) {
+            db.tasks().delete(t.id)
+            if (t.date == today) {
+                db.tasks().byKey(GenKeys.split(goal.id, today))?.takeIf { !it.done }?.let {
+                    db.tasks().update(it.copy(units = it.units + 1))
+                }
+            }
+        } else {
+            db.tasks().setDone(t.id, false, null)
+        }
+        refreshWidget()
+        return "Took 1 off ${goal.title}"
+    }
+
     /** Saves an edited plan; today's to-do is recalculated whenever anything it depends on changed. */
     suspend fun updateGoal(goal: Goal, today: LocalDate) {
         val old = db.goals().get(goal.id)
@@ -444,6 +465,28 @@ class Repository(
                 }
             )
             newTag?.let { append(" · new tag ${it.name}") }
+            if (clashes.isNotEmpty()) append("\n⚠ Clashes: ").append(clashes.joinToString("; "))
+        }
+    }
+
+    /** From the "New routine" form. */
+    suspend fun createRoutine(r: Routine, today: LocalDate): String {
+        if (r.title.isBlank()) return "Give it a name"
+        if (r.daysMask == 0) return "Pick at least one day"
+        val id = db.routines().insert(r.copy(id = 0, title = r.title.trim(), calendarEventId = null))
+        ensureFor(today)
+        val status = syncRoutines()
+        refreshWidget()
+        val clashes = r.time?.let { routineClashes(r.daysMask, it, r.minutes ?: 30, id, today) }.orEmpty()
+        return buildString {
+            append("Routine added: ${r.title.trim()} · ${Days.describe(r.daysMask)}")
+            r.time?.let { append(" ${hm.format(it)}") }
+            when {
+                !r.syncToCalendar -> Unit
+                r.time == null -> append(". Add a time to put it in Google Calendar")
+                !status.ok -> append(". ${status.message}")
+                else -> append(" · added to Google Calendar")
+            }
             if (clashes.isNotEmpty()) append("\n⚠ Clashes: ").append(clashes.joinToString("; "))
         }
     }

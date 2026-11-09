@@ -51,6 +51,13 @@ interface TaskDao {
 
     @Update suspend fun update(task: Task)
 
+    /** Most recently completed unit for a plan: a +1 log, a ticked to-do or a ticked step. */
+    @Query("SELECT * FROM tasks WHERE goalId = :goalId AND done = 1 ORDER BY doneAt DESC, id DESC LIMIT 1")
+    suspend fun latestDoneForGoal(goalId: Long): Task?
+
+    @Query("SELECT * FROM tasks WHERE genKey = :key")
+    suspend fun byKey(key: String): Task?
+
     @Query("DELETE FROM tasks WHERE genKey = :key AND done = 0")
     suspend fun deleteOpenByKey(key: String)
 

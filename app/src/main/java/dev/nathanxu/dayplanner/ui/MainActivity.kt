@@ -47,6 +47,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.nathanxu.dayplanner.data.Goal
 import dev.nathanxu.dayplanner.data.Routine
+import dev.nathanxu.dayplanner.domain.Days
 import dev.nathanxu.dayplanner.data.Task
 import java.time.format.DateTimeFormatter
 
@@ -191,6 +192,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     val goalActions = remember(vm) {
         GoalActions(
             onLog = { vm.logGoal(it) },
+            onUnlog = { vm.unlogGoal(it) },
             onSetRecurring = { g, on -> vm.setRecurring(g, on) },
             onSetSplit = { g, on -> vm.setSplit(g, on) },
             onDelete = { vm.deleteGoal(it) },
@@ -322,6 +324,9 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 onSetActive = { r, on -> vm.setRoutineActive(r, on) },
                 onDelete = { vm.deleteRoutine(it) },
                 onEdit = { editingRoutine = it },
+                onNew = {
+                    editingRoutine = Routine(title = "", daysMask = Days.WEEKDAYS, syncToCalendar = true)
+                },
                 syncStatus = syncStatus,
                 onOpenSettings = openSettings,
                 contentPadding = padding,
@@ -357,7 +362,10 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             routine = r,
             tagActions = tagActions,
             checkClashes = { mask, time, minutes, id -> vm.clashesFor(mask, time, minutes, id) },
-            onSave = { vm.updateRoutine(it); editingRoutine = null },
+            onSave = {
+                if (it.id == 0L) vm.createRoutine(it) else vm.updateRoutine(it)
+                editingRoutine = null
+            },
             onDelete = { vm.deleteRoutine(it); editingRoutine = null },
             onDismiss = { editingRoutine = null },
         )

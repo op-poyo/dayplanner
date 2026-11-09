@@ -23,6 +23,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,6 +56,8 @@ import kotlin.math.roundToInt
 
 class GoalActions(
     val onLog: (Goal) -> Unit,
+    /** Takes back the latest unit of progress. */
+    val onUnlog: (Goal) -> Unit,
     val onSetRecurring: (Goal, Boolean) -> Unit,
     val onSetSplit: (Goal, Boolean) -> Unit,
     val onDelete: (Goal) -> Unit,
@@ -190,10 +193,14 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalAction
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(0.dp)) {
                 when (s.mode) {
                     GoalMode.COUNT -> {
+                        OutlinedButton(onClick = { a.onUnlog(g) }, enabled = s.done > 0) { Text("−1") }
+                        Spacer(Modifier.width(6.dp))
                         FilledTonalButton(onClick = { a.onLog(g) }) { Text("+1") }
                     }
                     GoalMode.SINGLE -> if (!s.complete) {
                         FilledTonalButton(onClick = { a.onLog(g) }) { Text("Done") }
+                    } else {
+                        OutlinedButton(onClick = { a.onUnlog(g) }) { Text("Undo") }
                     }
                     GoalMode.STEPS -> Unit
                 }
