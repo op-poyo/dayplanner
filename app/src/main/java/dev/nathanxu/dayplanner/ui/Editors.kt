@@ -54,6 +54,9 @@ import dev.nathanxu.dayplanner.domain.Days
 import dev.nathanxu.dayplanner.domain.Pacing
 import dev.nathanxu.dayplanner.domain.Period
 import dev.nathanxu.dayplanner.domain.Priority
+import dev.nathanxu.dayplanner.domain.Repeat
+import dev.nathanxu.dayplanner.data.repeat
+import dev.nathanxu.dayplanner.data.withRepeat
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
 import kotlinx.coroutines.delay
@@ -307,17 +310,36 @@ private fun EditorDialog(
     }
 }
 
-/** null = default from Settings, 0 = at the time, n = n minutes before, −1 = none. */
+/**
+ * Off, a lead before the to-do's time (only when it has one), or an exact clock time on its day.
+ * [lead]: minutes before, null = off. [at]: exact time, wins over [lead].
+ */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun ReminderChips(value: Int?, onChange: (Int?) -> Unit) {
+private fun ReminderChips(
+    lead: Int?,
+    at: LocalTime?,
+    taskTime: LocalTime?,
+    onLead: (Int?) -> Unit,
+    onAt: (LocalTime?) -> Unit,
+) {
+    val ctx = LocalContext.current
     FieldLabel("Remind me")
     FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        listOf<Pair<Int?, String>>(
-            null to "Default", 0 to "At time", 5 to "5 min", 15 to "15 min", 30 to "30 min", 60 to "1 h", -1 to "Off",
-        ).forEach { (v, label) ->
-            FilterChip(selected = value == v, onClick = { onChange(v) }, label = { Text(label) })
+        FilterChip(selected = at == null && lead == null, onClick = { onAt(null); onLead(null) }, label = { Text("Off") })
+        if (taskTime != null) {
+            listOf(0 to "At time", 5 to "5 min", 15 to "15 min", 30 to "30 min", 60 to "1 h").forEach { (v, label) ->
+                FilterChip(selected = at == null && lead == v, onClick = { onAt(null); onLead(v) }, label = { Text(label) })
+            }
         }
+        FilterChip(
+            selected = at != null,
+            onClick = {
+                val start = at ?: taskTime?.minusHours(1) ?: LocalTime.of(9, 0)
+                TimePickerDialog(ctx, { _, h, m -> onAt(LocalTime.of(h, m)); onLead(null) }, start.hour, start.minute, true).show()
+            },
+            label = { Text(at?.let { "at " + it.format(DateTimeFormatter.ofPattern("HH:mm")) } ?: "Pick time…") },
+        )
     }
 }
 
@@ -333,6 +355,12 @@ fun TaskEditor(
     onDelete: (Task) -> Unit,
     onDismiss: () -> Unit,
     places: List<SavedPlace> = emptyList(),
+    /** Settings default for new to-dos (minutes before; null = off). */
+    defaultReminder: Int? = null,
+    /** New to-do → the repeating form, carrying what's been filled in. */
+    onMakeRepeating: ((Task) -> Unit)? = null,
+    /** A repeating to-do's instance → edit the repeating to-do itself. */
+    onEditSeries: ((Long) -> Unit)? = null,
 ) {
     var title by remember(task.id) { mutableStateOf(task.title) }
     var date by remember(task.id) { mutableStateOf(task.date) }
@@ -340,7 +368,11 @@ fun TaskEditor(
     var minutes by remember(task.id) { mutableStateOf(task.minutes) }
     var tag by remember(task.id) { mutableStateOf(task.category) }
     var goalId by remember(task.id) { mutableStateOf(task.goalId) }
-    var remindBefore by remember(task.id) { mutableStateOf(task.remindBefore) }
+    // Off is null here (−1 when saved, so a default can't overwrite it later).
+    var remindBefore by remember(task.id) {
+        mutableStateOf((if (task.id == 0L) task.remindBefore ?: defaultReminder else task.remindBefore)?.takeIf { it >= 0 })
+    }
+    var remindAt by remember(task.id) { mutableStateOf(task.remindAt?.toLocalTime()) }
     var priority by remember(task.id) { mutableStateOf(Priority.of(task.priority)) }
     var deadline by remember(task.id) { mutableStateOf(task.deadline) }
     var place by remember(task.id) { mutableStateOf(task.place ?: "") }
@@ -362,7 +394,10 @@ fun TaskEditor(
             onSave(
                 task.copy(
                     title = title.trim(), date = date, time = time, minutes = minutes?.takeIf { it > 0 },
-                    category = tag, goalId = goalId, remindBefore = remindBefore,
+                    category = tag, goalId = goalId,
+                    remindBefore = if (time != null && remindAt == null) remindBefore ?: -1 else -1,
+                    // Follows the to-do's date if you move it.
+                    remindAt = remindAt?.let { t -> date?.atTime(t) },
                     priority = Priority.store(priority), deadline = deadline,
                     place = place.trim().ifEmpty { null },
                 )
@@ -377,7 +412,7 @@ fun TaskEditor(
             if (d == null) time = null // someday: no time either
         })
         if (date != null) TimeField("Time", time, { time = it })
-        if (date != null && time != null) ReminderChips(remindBefore) { remindBefore = it }
+        if (date != null) ReminderChips(remindBefore, remindAt, time, { remindBefore = it }, { remindAt = it })
         DurationField(minutes, { minutes = it })
         TagPicker(tag, tagActions) { tag = it }
         if (!more) {
@@ -434,10 +469,19 @@ fun TaskEditor(
                 }
             }
         }
+        if (isNew && task.goalId == null && onMakeRepeating != null) {
+            TextButton(onClick = {
+                onMakeRepeating(task.copy(title = title.trim(), time = time, minutes = minutes?.takeIf { it > 0 }, category = tag))
+            }) { Text("Make it repeat…") }
+        }
+        val seriesId = task.routineId
+        if (seriesId != null && onEditSeries != null) {
+            TextButton(onClick = { onEditSeries(seriesId) }) { Text("Edit the repeating to-do (all days)") }
+        }
         if (task.genKey != null) {
             Spacer(Modifier.height(8.dp))
             Text(
-                "Created automatically by a routine or task — edits apply to this one only.",
+                "Made by a repeating to-do or a goal. Edits change this one only.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -465,6 +509,8 @@ fun PlanEditor(
     onSave: (Goal) -> Unit,
     onDelete: (Goal) -> Unit,
     onDismiss: () -> Unit,
+    /** Ends it today, keeping its progress (shown for active tasks being edited). */
+    onFinish: ((Goal) -> Unit)? = null,
 ) {
     val key = goal?.id ?: -1L
     var title by remember(key) { mutableStateOf(goal?.title ?: prefill?.title ?: prefillTitle ?: "") }
@@ -494,7 +540,7 @@ fun PlanEditor(
     }
 
     EditorDialog(
-        title = if (goal == null) "New task" else "Edit task",
+        title = if (goal == null) "New goal" else "Edit goal",
         canSave = valid,
         saveLabel = if (goal == null) "Create" else "Save",
         onSave = {
@@ -590,6 +636,10 @@ fun PlanEditor(
             }
         }
         if (!singleDay && !noEnd) SwitchRow("Repeat when it ends", recurring) { recurring = it }
+        if (goal != null && onFinish != null && !goal.archived) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = { onFinish(goal) }) { Text("Finish now (moves it to Finished)") }
+        }
     }
 }
 
@@ -600,39 +650,44 @@ fun PlanEditor(
 fun RoutineEditor(
     routine: Routine,
     tagActions: TagActions,
-    checkClashes: suspend (mask: Int, time: LocalTime, minutes: Int, routineId: Long?) -> List<String>,
+    checkClashes: suspend (repeat: Repeat, time: LocalTime, minutes: Int, routineId: Long?) -> List<String>,
     onSave: (Routine) -> Unit,
     onDelete: (Routine) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var title by remember(routine.id) { mutableStateOf(routine.title) }
     var mask by remember(routine.id) { mutableIntStateOf(routine.daysMask) }
+    var unit by remember(routine.id) { mutableStateOf(routine.repeat.unit) }
+    var every by remember(routine.id) { mutableIntStateOf(routine.repeat.every) }
+    var from by remember(routine.id) { mutableStateOf(routine.repeat.from ?: LocalDate.now()) }
+    // Plain weekly needs no start date (it's how every routine worked before v1.9).
+    val repeat = if (unit == Repeat.Unit.WEEK && every == 1) Repeat.weekly(mask) else Repeat(unit, every, mask, from)
     var time by remember(routine.id) { mutableStateOf(routine.time) }
     var minutes by remember(routine.id) { mutableStateOf(routine.minutes) }
     var tag by remember(routine.id) { mutableStateOf(routine.category) }
     var sync by remember(routine.id) { mutableStateOf(routine.syncToCalendar) }
     var active by remember(routine.id) { mutableStateOf(routine.active) }
-    var remind by remember(routine.id) { mutableStateOf(routine.remind ?: true) }
+    var remind by remember(routine.id) { mutableStateOf(routine.remind == true) }
     var clashes by remember(routine.id) { mutableStateOf<List<String>>(emptyList()) }
     val isNew = routine.id == 0L
 
     // Re-check whenever the slot changes (debounced so typing a duration doesn't spam queries).
-    LaunchedEffect(mask, time, minutes) {
+    LaunchedEffect(repeat, time, minutes) {
         val t = time
-        clashes = if (t == null || mask == 0) emptyList() else {
+        clashes = if (t == null || !repeat.isValid) emptyList() else {
             delay(300)
-            checkClashes(mask, t, minutes ?: 30, if (isNew) null else routine.id)
+            checkClashes(repeat, t, minutes ?: 30, if (isNew) null else routine.id)
         }
     }
 
     EditorDialog(
-        title = if (isNew) "New routine" else "Edit routine",
-        canSave = title.isNotBlank() && mask != 0,
+        title = if (isNew) "New repeating to-do" else "Edit repeating to-do",
+        canSave = title.isNotBlank() && repeat.isValid,
         saveLabel = if (isNew) "Create" else "Save",
         onSave = {
             onSave(
-                routine.copy(
-                    title = title.trim(), daysMask = mask, time = time, minutes = minutes?.takeIf { it > 0 },
+                routine.withRepeat(repeat).copy(
+                    title = title.trim(), time = time, minutes = minutes?.takeIf { it > 0 },
                     category = tag, syncToCalendar = sync, active = active, remind = remind,
                 )
             )
@@ -644,17 +699,47 @@ fun RoutineEditor(
             value = title, onValueChange = { title = it }, label = { Text("Name") },
             singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
-        FieldLabel("Days")
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            DayOfWeek.entries.forEach { d ->
-                FilterChip(selected = Days.has(mask, d), onClick = { mask = Days.toggle(mask, d) }, label = { Text(d.name.take(1)) })
-            }
+        FieldLabel("Repeats")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Every")
+            TextButton(onClick = { every = (every - 1).coerceAtLeast(1) }, enabled = every > 1) { Text("−") }
+            Text("$every", style = MaterialTheme.typography.titleMedium)
+            TextButton(onClick = { every = (every + 1).coerceAtMost(52) }) { Text("+") }
         }
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AssistChip(onClick = { mask = Days.WEEKDAYS }, label = { Text("Weekdays") })
-            AssistChip(onClick = { mask = Days.ALL }, label = { Text("Every day") })
-            AssistChip(onClick = { mask = 0b1100000 }, label = { Text("Weekends") })
+            listOf(Repeat.Unit.DAY to "day", Repeat.Unit.WEEK to "week", Repeat.Unit.MONTH to "month").forEach { (u, label) ->
+                FilterChip(selected = unit == u, onClick = { unit = u }, label = { Text(if (every == 1) label else label + "s") })
+            }
         }
+        if (unit == Repeat.Unit.WEEK) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                DayOfWeek.entries.forEach { d ->
+                    FilterChip(selected = Days.has(mask, d), onClick = { mask = Days.toggle(mask, d) }, label = { Text(d.name.take(1)) })
+                }
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AssistChip(onClick = { mask = Days.WEEKDAYS }, label = { Text("Weekdays") })
+                AssistChip(onClick = { mask = Days.ALL }, label = { Text("Every day") })
+                AssistChip(onClick = { mask = 0b1100000 }, label = { Text("Weekends") })
+            }
+        }
+        if (unit != Repeat.Unit.WEEK || every > 1) {
+            DateField(
+                when (unit) {
+                    Repeat.Unit.MONTH -> "First one (sets the day of the month)"
+                    Repeat.Unit.WEEK -> "Starting the week of"
+                    Repeat.Unit.DAY -> "First one"
+                },
+                from, { d -> d?.let { from = it } }, noneLabel = null,
+            )
+        }
+        Text(
+            if (!repeat.isValid) "Pick at least one day."
+            else repeat.describe() + (repeat.first(LocalDate.now())?.let { " · next " + friendlyDate(it) } ?: ""),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (repeat.isValid) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(top = 4.dp),
+        )
         Row {
             Column(Modifier.weight(1f)) {
                 TimeField("Start time", time, { t ->
@@ -687,7 +772,7 @@ fun RoutineEditor(
                 color = MaterialTheme.colorScheme.error,
                 modifier = Modifier.padding(top = 8.dp),
             )
-        } else if (time != null && mask != 0) {
+        } else if (time != null && repeat.isValid) {
             Text(
                 "✓ No clashes in the next 4 weeks",
                 style = MaterialTheme.typography.bodySmall,

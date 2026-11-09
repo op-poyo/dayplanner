@@ -19,8 +19,8 @@ class BackupCodecTest {
         tasks = listOf(
             Task(
                 id = 5, title = "Essay “draft”\nline 2", date = d, category = "study", minutes = 90, time = LocalTime.of(14, 30),
-                goalId = 2, routineId = null, units = 3, remindBefore = -1, priority = "HIGH", deadline = d.plusDays(4),
-                place = "UCL", plannedEvents = "11,12", genKey = "g:2:123", done = true, doneAt = 1_762_000_000_000, createdAt = 1_761_000_000_000,
+                goalId = 2, routineId = null, units = 3, remindBefore = -1, remindAt = d.atTime(13, 45), priority = "HIGH", deadline = d.plusDays(4),
+                place = "UCL", plannedEvents = "11,12", sittings = "2026-11-10T14:00/60;2026-11-11T09:00/30", skipped = true, genKey = "g:2:123", done = true, doneAt = 1_762_000_000_000, createdAt = 1_761_000_000_000,
             ),
             Task(id = 6, title = "Someday thing", date = null, createdAt = 1),
         ),
@@ -32,7 +32,7 @@ class BackupCodecTest {
         routines = listOf(
             Routine(id = 1, title = "Gym", category = "gym", minutes = 60, daysMask = 0b0010101, active = true,
                 time = LocalTime.of(7, 0), syncToCalendar = true, calendarEventId = 999, remind = false),
-            Routine(id = 2, title = "Read", daysMask = 127, time = null, remind = null),
+            Routine(id = 2, title = "Read", daysMask = 127, time = null, remind = null, repeatUnit = "MONTH", repeatEvery = 2, repeatFrom = d),
         ),
         tags = listOf(Tag("study", "Study", 0xFF3366CC.toInt()), Tag("gym", "Gym", 0xFF22AA55.toInt())),
         settings = SettingsState(

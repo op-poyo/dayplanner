@@ -21,9 +21,16 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.material3.Surface
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.Alignment
@@ -66,6 +73,10 @@ import dev.nathanxu.dayplanner.domain.QuickAdd
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.Priority
+import dev.nathanxu.dayplanner.domain.TodoSort
+import dev.nathanxu.dayplanner.domain.Repeat
+import dev.nathanxu.dayplanner.domain.TodayView
+import dev.nathanxu.dayplanner.data.withRepeat
 import dev.nathanxu.dayplanner.domain.TaskDraft
 import java.time.LocalDate
 import dev.nathanxu.dayplanner.data.Task
@@ -118,11 +129,11 @@ class MainActivity : ComponentActivity() {
 private enum class Tab(val label: String, val icon: ImageVector) {
     TODAY("Today", Icons.Default.Home),
     CALENDAR("Calendar", Icons.Default.DateRange),
-    GOALS("Tasks", Icons.Default.Star),
-    ROUTINES("Routines", Icons.Default.List),
+    TODOS("To-dos", Icons.Default.List),
+    GOALS("Goals", Icons.Default.Star),
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int = 0) {
     val today by vm.today.collectAsStateWithLifecycle()
@@ -145,6 +156,12 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
 
     var tab by rememberSaveable { mutableStateOf(Tab.TODAY) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
+    var showSearch by rememberSaveable { mutableStateOf(false) }
+    /** null = the Settings index page; otherwise which section is open. */
+    var settingsSection by rememberSaveable { mutableStateOf<Int?>(null) }
+    var showSyntax by remember { mutableStateOf(false) }
+    val searchQuery by vm.searchQuery.collectAsStateWithLifecycle()
+    val searchResults by vm.searchResults.collectAsStateWithLifecycle()
     var editingTask by remember { mutableStateOf<Task?>(null) }
     var editingGoal by remember { mutableStateOf<Goal?>(null) }
     var creatingPlan by remember { mutableStateOf(false) }
@@ -252,6 +269,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
             onEditStep = { editingTask = it },
             onExpandStep = { g, text -> editingTask = draftTask(text, today, tags, vm).copy(goalId = g.id, category = g.category) },
             onExtend = { g, d -> vm.extendGoal(g, d) },
+            onClearFinished = { vm.clearFinished() },
         )
     }
     val todoActions = remember(vm) {
@@ -266,16 +284,27 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
         creatingPlan = true
     }
     /** Quick-add text → full to-do form; "@week" typed in the to-do box opens the task form instead. */
+    /** Quick-add text → the repeating to-do form (weekdays if no repeat was typed). */
+    val openRepeatingForm = { text: String ->
+        val d = QuickAdd.parse(text, today) as? TaskDraft
+        val rep = d?.repeat ?: Repeat.weekly(Days.WEEKDAYS)
+        editingRoutine = Routine(
+            title = d?.title ?: "", daysMask = rep.daysMask, time = d?.time, minutes = d?.minutes,
+            category = tagKeyFor(d?.tag, tags, vm), syncToCalendar = true,
+        ).withRepeat(rep)
+    }
     val openTodoForm = { text: String ->
-        if (QuickAdd.parse(text, today) is GoalDraft) {
-            openPlanForm(text)
-        } else {
-            editingTask = draftTask(text, today, tags, vm)
+        val parsed = QuickAdd.parse(text, today)
+        when {
+            parsed is GoalDraft -> openPlanForm(text)
+            parsed is TaskDraft && parsed.repeat != null -> openRepeatingForm(text)
+            else -> editingTask = draftTask(text, today, tags, vm)
         }
         Unit
     }
 
-    BackHandler(enabled = showSettings) { showSettings = false }
+    BackHandler(enabled = showSettings) { if (settingsSection != null) settingsSection = null else showSettings = false }
+    BackHandler(enabled = showSearch && !showSettings) { showSearch = false }
     // A new message replaces the one showing (collectLatest cancels the old wait) instead of queueing.
     LaunchedEffect(Unit) {
         vm.snackbars.collectLatest { m ->
@@ -284,12 +313,15 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
             if (result == SnackbarResult.ActionPerformed) m.action?.invoke()
         }
     }
+    // Keep search results current after editing or ticking one.
+    LaunchedEffect(allTodos, goals, routines, finished) { if (showSearch) vm.rerunSearch() }
     LaunchedEffect(reviewRequest) {
         if (reviewRequest > 0) vm.openReview()
     }
     LaunchedEffect(quickAddRequest) {
         if (quickAddRequest > 0) {
             showSettings = false
+            showSearch = false
             tab = Tab.TODAY
             // Give the Today list a frame to compose before focusing.
             kotlinx.coroutines.delay(150)
@@ -301,7 +333,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
         AlertDialog(
             onDismissRequest = { pendingRestore = null },
             title = { Text("Restore this backup?") },
-            text = { Text("Everything in the app is replaced by the backup's to-dos, long-term tasks, routines, tags and settings. You can undo straight after.") },
+            text = { Text("Everything in the app is replaced by the backup's to-dos, goals, repeating to-dos, tags and settings. You can undo straight after.") },
             confirmButton = {
                 TextButton(onClick = { vm.importBackup(uri); pendingRestore = null }) { Text("Restore") }
             },
@@ -336,21 +368,31 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    if (showSettings) {
-                        IconButton(onClick = { showSettings = false }) { Icon(Icons.Default.ArrowBack, "Back") }
+                    if (showSettings || showSearch) {
+                        IconButton(onClick = {
+                            when {
+                                showSettings && settingsSection != null -> settingsSection = null
+                                showSettings -> showSettings = false
+                                else -> showSearch = false
+                            }
+                        }) {
+                            Icon(Icons.Default.ArrowBack, "Back")
+                        }
                     }
                 },
                 title = {
                     Text(
                         when {
-                            showSettings -> "Settings"
+                            showSettings -> settingsSection?.let { SETTINGS_SECTIONS[it].first } ?: "Settings"
+                            showSearch -> "Search"
                             tab == Tab.TODAY -> today.format(DateTimeFormatter.ofPattern("EEEE d MMMM"))
                             else -> tab.label
                         },
                     )
                 },
                 actions = {
-                    if (!showSettings) {
+                    if (!showSettings && !showSearch) {
+                        IconButton(onClick = { showSearch = true }) { Icon(Icons.Default.Search, "Search") }
                         if (tab == Tab.TODAY || tab == Tab.CALENDAR) {
                             IconButton(onClick = { vm.refresh() }) { Icon(Icons.Default.Refresh, "Refresh") }
                         }
@@ -360,8 +402,32 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
             )
         },
         bottomBar = {
-            if (!showSettings) {
-                NavigationBar {
+            if (!showSettings && !showSearch) Column(Modifier.imePadding()) {
+                // One way to add: this box (✎ opens the full form, ? the syntax).
+                if (tab != Tab.CALENDAR) {
+                    Surface(tonalElevation = 3.dp) {
+                        QuickAddBar(
+                            placeholder = when (tab) {
+                                Tab.GOALS -> "LeetCode x15 @month #quant"
+                                Tab.TODOS -> if (tasksSegment == 1) "Gym 18:00 1h every mon,wed" else "Essay 2h by fri !high #study"
+                                else -> "Essay 2h by fri !high #study"
+                            },
+                            onSubmit = { vm.quickAdd(it) },
+                            onExpand = { text ->
+                                when {
+                                    tab == Tab.GOALS -> openPlanForm(text)
+                                    tab == Tab.TODOS && tasksSegment == 1 -> openRepeatingForm(text)
+                                    else -> openTodoForm(text)
+                                }
+                            },
+                            onHelp = { showSyntax = true },
+                            focusRequester = quickAddFocus,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        )
+                    }
+                }
+                // The tab bar steps aside while typing, so the box sits right on the keyboard.
+                if (!WindowInsets.isImeVisible) NavigationBar {
                     Tab.entries.forEach { t ->
                         NavigationBarItem(
                             selected = tab == t,
@@ -375,20 +441,12 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
         },
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            if (!showSettings) {
-                val (label, onClick) = when (tab) {
-                    Tab.TODAY -> "New to-do" to { editingTask = Task(title = "", date = today) }
-                    Tab.CALENDAR -> "New to-do" to { editingTask = Task(title = "", date = calView.selected) }
-                    Tab.GOALS -> if (tasksSegment == 0) "New task" to { openPlanForm("") }
-                    else "New to-do" to { editingTask = Task(title = "", date = today) }
-                    Tab.ROUTINES -> "New routine" to {
-                        editingRoutine = Routine(title = "", daysMask = Days.WEEKDAYS, syncToCalendar = true)
-                    }
-                }
+            // Calendar has no quick-add box: a button adds a to-do on the selected day.
+            if (!showSettings && !showSearch && tab == Tab.CALENDAR) {
                 ExtendedFloatingActionButton(
-                    onClick = onClick,
+                    onClick = { editingTask = Task(title = "", date = calView.selected) },
                     icon = { Icon(Icons.Default.Add, contentDescription = null) },
-                    text = { Text(label) },
+                    text = { Text("New to-do") },
                 )
             }
         },
@@ -404,6 +462,21 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
                 alertState = alertState,
                 actions = settingsActions,
                 contentPadding = padding,
+                section = settingsSection,
+                onSection = { settingsSection = it },
+            )
+        } else if (showSearch) {
+            SearchScreen(
+                query = searchQuery,
+                onQuery = { vm.setSearch(it) },
+                results = searchResults,
+                tags = tags,
+                today = today,
+                onTask = { editingTask = it },
+                onToggle = { vm.toggle(it) },
+                onGoal = { editingGoal = it },
+                onRoutine = { editingRoutine = it },
+                contentPadding = padding,
             )
         } else when (tab) {
             Tab.TODAY -> TodayScreen(
@@ -414,10 +487,12 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
                 goals = goals,
                 tags = tags,
                 loading = loading,
+                routines = routines,
+                later = TodayView.laterSummary(
+                    allTodos.filter { !it.done && (it.date == null || it.date.isAfter(today)) }.map { it.date }, today,
+                ),
                 onOpenGoals = { tab = Tab.GOALS },
-                quickAddFocus = quickAddFocus,
-                onQuickAdd = { vm.quickAdd(it) },
-                onExpandTodo = { openTodoForm(it) },
+                onOpenTodos = { tab = Tab.TODOS; tasksSegment = 0 },
                 onToggle = { vm.toggle(it) },
                 onDelete = { vm.delete(it) },
                 onEditTask = { editingTask = it },
@@ -428,6 +503,11 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
                 onPlan = { vm.openPlanner(1) },
                 reviewDue = settings.weeklyReview && today.dayOfWeek == settings.reviewDay,
                 onReview = { vm.openReview() },
+                sort = TodoSort.of(settings.todoSort),
+                onSort = { vm.setSort(it) },
+                onTickUpcoming = { vm.tickWithUndo(it) },
+                showSwipeTip = !settings.swipeTipSeen,
+                onDismissSwipeTip = { vm.dismissSwipeTip() },
             )
             Tab.CALENDAR -> CalendarScreen(
                 view = calView,
@@ -445,44 +525,44 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
                 onEditTask = { editingTask = it },
                 contentPadding = padding,
             )
+            Tab.TODOS -> TodosScreen(
+                today = today,
+                segment = tasksSegment,
+                onSegment = { tasksSegment = it },
+                todos = allTodos,
+                tags = tags,
+                todoActions = todoActions,
+                contentPadding = padding,
+                sort = TodoSort.of(settings.todoSort),
+                onSort = { vm.setSort(it) },
+                showSwipeTip = !settings.swipeTipSeen,
+                onDismissSwipeTip = { vm.dismissSwipeTip() },
+                repeating = { header ->
+                    RoutinesScreen(
+                        routines = routines,
+                        tags = tags,
+                        canWriteCalendar = canWriteCalendar,
+                        onRequestCalendar = requestCalendar,
+                        onSetSync = { r, on -> vm.setRoutineSync(r, on) },
+                        onSetActive = { r, on -> vm.setRoutineActive(r, on) },
+                        onDelete = { vm.deleteRoutine(it) },
+                        onEdit = { editingRoutine = it },
+                        onNew = { openRepeatingForm("") },
+                        syncStatus = syncStatus,
+                        onOpenSettings = openSettings,
+                        contentPadding = padding,
+                        header = header,
+                    )
+                },
+            )
             Tab.GOALS -> GoalsScreen(
                 today = today,
                 goals = goals,
-                tags = tags,
-                segment = tasksSegment,
-                onSegment = { tasksSegment = it },
                 finished = finished,
-                todos = allTodos,
-                onQuickAdd = { vm.quickAdd(it) },
-                onExpandPlan = { openPlanForm(it) },
-                onExpandTodo = { openTodoForm(it) },
-                actions = goalActions,
-                todoActions = todoActions,
-                contentPadding = padding,
-            )
-            Tab.ROUTINES -> RoutinesScreen(
-                routines = routines,
                 tags = tags,
-                canWriteCalendar = canWriteCalendar,
-                onRequestCalendar = requestCalendar,
-                onAdd = { text, mask, sync -> vm.addRoutine(text, mask, sync) },
-                onSetSync = { r, on -> vm.setRoutineSync(r, on) },
-                onSetActive = { r, on -> vm.setRoutineActive(r, on) },
-                onDelete = { vm.deleteRoutine(it) },
-                onEdit = { editingRoutine = it },
-                onNew = {
-                    editingRoutine = Routine(title = "", daysMask = Days.WEEKDAYS, syncToCalendar = true)
-                },
-                onExpand = { text, mask ->
-                    val d = QuickAdd.parse(text, today) as? TaskDraft
-                    editingRoutine = Routine(
-                        title = d?.title ?: "", daysMask = if (mask != 0) mask else Days.WEEKDAYS,
-                        time = d?.time, minutes = d?.minutes, category = tagKeyFor(d?.tag, tags, vm),
-                        syncToCalendar = true,
-                    )
-                },
-                syncStatus = syncStatus,
-                onOpenSettings = openSettings,
+                onNewGoal = { openPlanForm("") },
+                onReview = { vm.openReview() },
+                actions = goalActions,
                 contentPadding = padding,
             )
         }
@@ -502,8 +582,21 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
             onDelete = { vm.delete(it); editingTask = null },
             onDismiss = { editingTask = null },
             places = settings.places,
+            defaultReminder = settings.reminderLead,
+            onMakeRepeating = { d ->
+                editingTask = null
+                editingRoutine = Routine(
+                    title = d.title, daysMask = Days.WEEKDAYS, time = d.time, minutes = d.minutes,
+                    category = d.category, syncToCalendar = true,
+                )
+            },
+            onEditSeries = { id ->
+                routines.firstOrNull { it.id == id }?.let { r -> editingTask = null; editingRoutine = r }
+            },
         )
     }
+
+    if (showSyntax) SyntaxSheet(onDismiss = { showSyntax = false })
 
     review?.let { s ->
         ReviewSheet(
@@ -540,13 +633,14 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
             onSave = { vm.updateGoal(it); editingGoal = null },
             onDelete = { vm.deleteGoal(it); editingGoal = null },
             onDismiss = { creatingPlan = false; editingGoal = null },
+            onFinish = { vm.finishGoal(it); editingGoal = null },
         )
     }
     editingRoutine?.let { r ->
         RoutineEditor(
             routine = r,
             tagActions = tagActions,
-            checkClashes = { mask, time, minutes, id -> vm.clashesFor(mask, time, minutes, id) },
+            checkClashes = { repeat, time, minutes, id -> vm.clashesFor(repeat, time, minutes, id) },
             onSave = {
                 if (it.id == 0L) vm.createRoutine(it) else vm.updateRoutine(it)
                 editingRoutine = null

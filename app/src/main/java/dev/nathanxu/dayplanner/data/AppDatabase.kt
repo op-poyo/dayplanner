@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Task::class, Goal::class, Routine::class, TravelCache::class],
-    version = 5,
+    version = 7,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -53,9 +53,27 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v1.8.1: remind at an exact time. */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `remindAt` INTEGER")
+            }
+        }
+
+        /** v1.9: repeat rules, skipped generated to-dos, sittings of split plans. */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `sittings` TEXT")
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `skipped` INTEGER")
+                db.execSQL("ALTER TABLE `routines` ADD COLUMN `repeatUnit` TEXT")
+                db.execSQL("ALTER TABLE `routines` ADD COLUMN `repeatEvery` INTEGER")
+                db.execSQL("ALTER TABLE `routines` ADD COLUMN `repeatFrom` INTEGER")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "dayplanner.db")
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 // Only for very old test installs (v1.0/1.1) that have no migration path.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()

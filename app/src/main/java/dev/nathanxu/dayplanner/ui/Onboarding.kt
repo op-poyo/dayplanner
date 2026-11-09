@@ -90,14 +90,14 @@ fun Onboarding(
                 when (step) {
                     0 -> {
                         Title("Your day in one place")
-                        Body("Calendar, to-dos, long-term tasks and routines together, with a plan for when to do things and reminders when it's time.")
+                        Body("Calendar, to-dos (one-off and repeating) and goals together, with a plan for when to do things and reminders when it's time.")
                         Body("Setup takes about a minute. Every step can be skipped and changed later in Settings.")
                         Spacer(Modifier.height(16.dp))
                         OutlinedButton(onClick = a.restore) { Text("Restore from a backup instead") }
                     }
                     1 -> {
                         Title("Connect your calendar")
-                        Body("Shows your lectures and events, avoids them when planning, and puts routines into Google Calendar. Nothing leaves your phone.")
+                        Body("Shows your lectures and events, avoids them when planning, and puts repeating to-dos into Google Calendar. Nothing leaves your phone.")
                         if (!calendarConnected) {
                             Button(onClick = a.requestCalendar) { Text("Allow calendar access") }
                         } else {
@@ -160,7 +160,7 @@ fun Onboarding(
                         Spacer(Modifier.height(16.dp))
                         Body("Try one (it's added for real):")
                         var added by remember { mutableStateOf<String?>(null) }
-                        QuickAddBar(placeholder = "Problem sheet fri #study 1h", onSubmit = { a.quickAdd(it); added = it })
+                        QuickAddBar(placeholder = "Essay 2h by fri !high #study", onSubmit = { a.quickAdd(it); added = it })
                         added?.let { Body("Added “$it”. You'll find it on Today.") }
                         Body("In the app, ✎ in the box opens the full form. All the shortcuts are in Settings → Syntax.")
                     }

@@ -1,4 +1,4 @@
-# DayPlanner v1.8
+# DayPlanner v1.10
 
 Personal Android planner: Google Calendar timeline with travel times, daily tasks, weekly/monthly goals, routines, and a home-screen widget. Local-first, no server. See `PLAN.md` for the design and its self-review.
 
@@ -49,9 +49,39 @@ One box adds everything:
 - Pause a routine, turn its 📅 off, or delete it, and the event is removed. If you delete the event in Google Calendar yourself, the app stops syncing that routine instead of re-creating it.
 - The app is the source of truth: edits made to the event in Google Calendar aren't read back.
 
+### v1.10: reorganised (nothing new, easier to use)
+
+- **Two kinds of thing.** A **to-do** is something you do (once, or repeating). A **goal** is progress over time ("LeetCode ×15 this month", "gym 3× a week"). Routines are now *repeating to-dos*; long-term tasks are *goals*. Rule of thumb: a set day/time → repeating to-do; "N times, whenever" → goal.
+- **Tabs: Today · Calendar · To-dos · Goals.** To-dos has *All* and *Repeating*; Goals has *New goal* and *Weekly review*.
+- **One box to add things**, pinned above the tabs (✎ = full form, ? = syntax). It understands repeats: `Gym 18:00 1h every mon,wed`, `Standup 9:30 weekdays`, `daily`, `every 2 weeks tue`, `every 3 days`, `monthly`. The only button left is *New to-do* on Calendar.
+- **Today is one timeline**: one banner at most (slipped plans or the weekly review), **Next up**, then events, travel and timed to-dos in one list (no more duplicates of planned blocks or repeating to-dos' calendar events), then *Anytime* (no time; Plan my day lives here), a collapsed **Later** line (tomorrow / this week / someday), and a strip of goals. Someday to-dos are no longer on Today.
+- To-do form: *Make it repeat…* for a new one; *Edit the repeating to-do (all days)* from a repeating one's day.
+- **Settings** opens on an index page (with a one-line status for each section) instead of tabs.
+- The swipe hint is a one-time tip.
+
+### v1.9: repeats, search, tidier lists
+
+- **Repeat rules for routines**: every N days, every N weeks on chosen days (e.g. fortnightly Mon + Wed), or every N months on a date (31st → last day in shorter months). Form: *Repeats → Every [−] 2 [+] day / week / month*, with a start date, and a line saying what it means and when the next one is. Google Calendar gets the matching repeating event. Existing routines stay weekly.
+- **Deleting a routine's or a long-term task's daily to-do skips it for that day** (it used to come back on refresh). Snackbar: *Skipped … · Undo*.
+- **Every sitting reminds you**: a to-do the planner split into sittings gets a reminder per sitting (using the to-do's *Remind me*), not just the first.
+- **Widget flips to the new day just after midnight** (it could take ~30 min).
+- **Search** (🔍 top bar): to-dos by title, place or tag (open and done), long-term tasks and routines. Tap to edit; tick from the results.
+- **Finished long-term tasks**: delete one (bin icon) or **Clear all** (both with Undo). **Finish now** in a task's edit form ends it today and keeps its progress.
+- DB v7 (nullable columns only).
+
+### v1.8.1: fixes from testing 1.8
+
+- **Undo after swipe-delete works** (the row used to come back and delete itself again).
+- **Reminders are off unless you pick one.** *Remind me* is Off / At time / 5 / 15 / 30 min / 1 h / **Pick time…** (a clock time on the to-do's day; works for to-dos without a time too). The default for new timed to-dos is in Settings → Planning & alerts (Off to start). Routines remind only if you switch it on.
+- **Upcoming** to-dos on Today can be ticked (checkbox or swipe, with Undo).
+- **Sort** to-dos by Date, Priority or Tag: on Today (To-do header) and All to-dos (sections High/Normal/Low or one per tag). Remembered.
+- Settings: **Travel** on its own; alerts moved into **Planning & alerts**.
+- Quick-add hints show the newer syntax (`Essay 2h by fri !high #study`).
+- DB v6 (one nullable column).
+
 ### v1.8: weekly review, backups, first-launch setup
 
-- **Weekly review** (Sunday 18:00 notification, or the card on Today that day, or Settings → Travel & alerts): to-dos done this week by day and by tag, routine hit rate (e.g. Gym 2/3), long-term progress, what **slipped** with one-tap fixes (*Today*, *Next Mon*, *Someday*, *Done*), and next week's to-dos and deadlines. **Plan the next 7 days** opens the planner. ‹ Earlier shows past weeks. Day and time are in Settings.
+- **Weekly review** (Sunday 18:00 notification, or the card on Today that day, or Settings → Planning & alerts): to-dos done this week by day and by tag, routine hit rate (e.g. Gym 2/3), long-term progress, what **slipped** with one-tap fixes (*Today*, *Next Mon*, *Someday*, *Done*), and next week's to-dos and deadlines. **Plan the next 7 days** opens the planner. ‹ Earlier shows past weeks. Day and time are in Settings.
 - **Backup / restore** (Settings → Backup): one readable JSON file with every to-do, long-term task, routine, tag and setting. Save it anywhere the file picker offers, Google Drive included. Restore asks first, replaces everything, and offers **Undo**. Calendar choices on the phone are kept; routines get their calendar events back without duplicates. Android's own automatic backup to your Google account stays on as well.
 - **First-launch setup**: welcome, calendar access (and which Google accounts), notifications, planning hours and Home, and a quick-add tutorial with a live box. Every step can be skipped; *Restore from a backup* is on the first screen. Existing installs skip it.
 - Typing quick-add text and tapping ✎ now carries priority and deadline into the full form.
@@ -68,7 +98,7 @@ One box adds everything:
 
 ### v1.6.2: reminders
 
-- **To-dos with a time remind you**: at the time, or 5/15/30/60 min before (set per to-do under *Remind me*, or the default in Settings → Travel & alerts). The notification has **Done** (ticks it off) and **Snooze 10 min**.
+- **To-dos with a time remind you**: at the time, or 5/15/30/60 min before (set per to-do under *Remind me*, or the default in Settings → Planning & alerts). The notification has **Done** (ticks it off) and **Snooze 10 min**.
 - Routine to-dos remind too; switch it off per routine (*Remind me at the start time*).
 - Ticking off, moving or deleting a to-do re-plans its reminder within a second, so you don't get nagged about finished things. A reminder that fires after you ticked the to-do is dropped.
 - Alarms survive reboots and app updates, and are re-planned daily at 04:30.

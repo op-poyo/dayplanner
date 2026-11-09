@@ -28,6 +28,9 @@ import dev.nathanxu.dayplanner.travel.TravelMode
 import dev.nathanxu.dayplanner.travel.TravelService
 import dev.nathanxu.dayplanner.widget.TodayWidget
 import dev.nathanxu.dayplanner.domain.ReminderInput
+import dev.nathanxu.dayplanner.domain.Sitting
+import dev.nathanxu.dayplanner.domain.Sittings
+import dev.nathanxu.dayplanner.domain.Repeat
 import dev.nathanxu.dayplanner.domain.Block
 import dev.nathanxu.dayplanner.domain.Plan
 import dev.nathanxu.dayplanner.domain.PlanCandidate
@@ -284,7 +287,7 @@ class Repository(
         for (g in goals.active()) syncSplit(g, date)
 
         for (r in db.routines().active()) {
-            if (Days.has(r.daysMask, date.dayOfWeek)) {
+            if (r.repeat.occursOn(date)) {
                 tasks.insertIgnore(
                     Task(
                         title = r.title, date = date, category = r.category, minutes = r.minutes,
@@ -304,7 +307,8 @@ class Repository(
         val tasks = db.tasks()
         val key = GenKeys.split(g.id, date)
         val existing = tasks.byKey(key)
-        if (existing?.done == true) return
+        // Ticked, or deleted (skipped) today: leave it alone.
+        if (existing?.done == true || existing?.skipped == true) return
         val cadence = g.effectiveCadence.let { if (g.isOngoing && it == Cadence.NONE) Cadence.DAILY else it }
         val wanted = cadence != Cadence.NONE && g.isActiveOn(date) && (g.isOngoing || g.target > 1)
         val remaining = if (!wanted) 0 else Pacing.remainingToday(
@@ -347,6 +351,19 @@ class Repository(
         return when (val p = QuickAdd.parse(text, today)) {
             null -> "Nothing to add — type a title"
             is TaskDraft -> {
+                // "every mon,wed", "daily"…: a repeating to-do.
+                p.repeat?.let { rep ->
+                    val (tagKey, newTag) = tagFor(p.tag)
+                    val msg = createRoutine(
+                        Routine(
+                            title = p.title, category = tagKey, minutes = p.minutes, time = p.time,
+                            syncToCalendar = p.time != null, remind = p.time != null && settings.current.reminderLead != null,
+                            daysMask = rep.daysMask,
+                        ).withRepeat(rep),
+                        today,
+                    )
+                    return msg + (newTag?.let { " · new tag ${it.name}" } ?: "")
+                }
                 val goal = p.goalHint?.let { hint ->
                     db.goals().active()
                         .filter { it.isActiveOn(today) }
@@ -360,7 +377,7 @@ class Repository(
                     p.deadline?.let { append(" · due ").append(if (it == today) "today" else dayFmt.format(it)) }
                     if (p.priority != Priority.NORMAL) append(" · ").append(p.priority.label.lowercase()).append(" priority")
                     if (goal != null) append(" → ${goal.title}")
-                    else if (p.goalHint != null) append(" (no plan matched ^${p.goalHint})")
+                    else if (p.goalHint != null) append(" (no goal matched ^${p.goalHint})")
                     newTag?.let { append(" · new tag ${it.name}") }
                 }
             }
@@ -375,7 +392,7 @@ class Repository(
                 ensureFor(today)
                 changed()
                 val split = if (p.target > 1) ", split into daily to-dos" else ""
-                "Plan added: ${p.title} ×${p.target} ${p.period.label.lowercase()}$split" +
+                "Goal added: ${p.title} ×${p.target} ${p.period.label.lowercase()}$split" +
                     (if (p.recurring) " ↻" else "") + (newTag?.let { " · new tag ${it.name}" } ?: "")
             }
         }
@@ -409,7 +426,7 @@ class Repository(
         val range = if (Pacing.isOngoing(d.end)) "ongoing from ${dayFmt.format(d.start)}"
         else "${dayFmt.format(d.start)} – ${dayFmt.format(d.end)}"
         val breakdown = if (d.target > 1 && d.cadence != Cadence.NONE) " · ${d.cadence.label.lowercase()} to-dos" else ""
-        return "Plan added: ${d.title.trim()} · $range$breakdown"
+        return "Goal added: ${d.title.trim()} · $range$breakdown"
     }
 
     /** Adds a step to a plan from its card. */
@@ -427,6 +444,8 @@ class Repository(
                 title = p.title, date = p.date, time = p.time, minutes = p.minutes, goalId = goal?.id,
                 category = if (p.tag == null && goal != null) goal.category else tagKey,
                 priority = Priority.store(p.priority), deadline = p.deadline,
+                // Quick-add has no reminder picker: timed to-dos get the Settings default (off unless set).
+                remindBefore = if (p.time != null) settings.current.reminderLead else null,
             )
         )
         changed()
@@ -443,7 +462,8 @@ class Repository(
 
     /** Puts back something you just deleted (snackbar Undo). */
     suspend fun restoreTask(task: Task) {
-        db.tasks().insertIgnore(task)
+        // A skipped routine/split to-do is still there (hidden): put the old row back over it.
+        if (db.tasks().get(task.id) != null) db.tasks().update(task) else db.tasks().insertIgnore(task)
         changed()
     }
 
@@ -453,7 +473,7 @@ class Repository(
         // Moved by hand: the planner's calendar blocks no longer match, so remove them.
         if (old?.plannedEvents != null && (old.date != task.date || old.time != task.time)) {
             deletePlannedEvents(old.plannedEvents, futureOnly = false)
-            next = task.copy(plannedEvents = null)
+            next = task.copy(plannedEvents = null, sittings = null)
         }
         db.tasks().update(next)
         changed()
@@ -484,10 +504,38 @@ class Repository(
         setDone(id, !t.done)
     }
 
-    suspend fun deleteTask(id: Long) {
-        db.tasks().get(id)?.plannedEvents?.let { deletePlannedEvents(it, futureOnly = true) }
-        db.tasks().delete(id)
+    /**
+     * Deletes a to-do. One made by a routine or a long-term task's breakdown is skipped instead
+     * (kept hidden for that day), so it isn't made again on the next refresh. Returns true if skipped.
+     */
+    suspend fun deleteTask(id: Long): Boolean {
+        val t = db.tasks().get(id) ?: return false
+        t.plannedEvents?.let { deletePlannedEvents(it, futureOnly = true) }
+        val generated = t.genKey?.let { it.startsWith("r:") || it.startsWith("g:") } == true
+        if (generated) db.tasks().update(t.copy(skipped = true, done = false, doneAt = null))
+        else db.tasks().delete(id)
         changed()
+        return generated
+    }
+
+    // ---------- search ----------
+
+    data class SearchResults(val tasks: List<Task>, val goals: List<Goal>, val routines: List<Routine>) {
+        val isEmpty get() = tasks.isEmpty() && goals.isEmpty() && routines.isEmpty()
+    }
+
+    /** To-dos (title, place or tag name), long-term tasks and routines containing [query]. */
+    suspend fun search(query: String): SearchResults {
+        val q = query.trim()
+        if (q.isEmpty()) return SearchResults(emptyList(), emptyList(), emptyList())
+        val tagKeys = tags.current.filter { it.name.contains(q, ignoreCase = true) }.map { it.key }
+        val has = { s: String -> s.contains(q, ignoreCase = true) }
+        return SearchResults(
+            tasks = db.tasks().search(q, tagKeys),
+            goals = db.goals().all().filter { has(it.title) || it.category in tagKeys }
+                .sortedWith(compareBy({ it.archived }, { -it.periodStart.toEpochDay() })),
+            routines = db.routines().all().filter { has(it.title) || it.category in tagKeys },
+        )
     }
 
     // ---------- goals / plans ----------
@@ -559,10 +607,30 @@ class Repository(
         changed()
     }
 
+    /** Ends a long-term task today: it moves to Finished (with its progress) and stops making to-dos. */
+    suspend fun finishGoal(goal: Goal, today: LocalDate) {
+        db.tasks().deleteOpenSplits(goal.id)
+        db.goals().update(goal.copy(archived = true, recurring = false, endDate = maxOf(today, goal.periodStart), period = Period.CUSTOM))
+        changed()
+    }
+
+    /** Deletes every finished long-term task; returns them for Undo. */
+    suspend fun clearFinished(): List<Goal> {
+        val gone = db.goals().all().filter { it.archived && !it.recurring }
+        gone.forEach { db.goals().delete(it) }
+        changed()
+        return gone
+    }
+
+    suspend fun restoreGoals(goals: List<Goal>) {
+        goals.forEach { db.goals().insert(it) }
+        changed()
+    }
+
     // ---------- routines ----------
 
     suspend fun addRoutine(text: String, daysMask: Int, sync: Boolean, today: LocalDate): String {
-        val p = QuickAdd.parse(text, today) as? TaskDraft ?: return "Routines need a title (no @week/@month)"
+        val p = QuickAdd.parse(text, today) as? TaskDraft ?: return "Repeating to-dos need a title (no @week/@month)"
         if (daysMask == 0) return "Pick at least one day"
         val (tagKey, newTag) = tagFor(p.tag)
         val id = db.routines().insert(
@@ -574,8 +642,8 @@ class Repository(
         ensureFor(today)
         val status = syncRoutines()
         changed()
-        val clashes = p.time?.let { routineClashes(daysMask, it, p.minutes ?: 30, id, today) }.orEmpty()
-        val base = "Routine added: ${p.title} · ${Days.describe(daysMask)}" + (p.time?.let { " ${hm.format(it)}" } ?: "")
+        val clashes = p.time?.let { routineClashes(Repeat.weekly(daysMask), it, p.minutes ?: 30, id, today) }.orEmpty()
+        val base = "Repeating to-do added: ${p.title} · ${Days.describe(daysMask)}" + (p.time?.let { " ${hm.format(it)}" } ?: "")
         return buildString {
             append(
                 when {
@@ -593,14 +661,14 @@ class Repository(
     /** From the "New routine" form. */
     suspend fun createRoutine(r: Routine, today: LocalDate): String {
         if (r.title.isBlank()) return "Give it a name"
-        if (r.daysMask == 0) return "Pick at least one day"
+        if (!r.repeat.isValid) return "Pick at least one day"
         val id = db.routines().insert(r.copy(id = 0, title = r.title.trim(), calendarEventId = null))
         ensureFor(today)
         val status = syncRoutines()
         changed()
-        val clashes = r.time?.let { routineClashes(r.daysMask, it, r.minutes ?: 30, id, today) }.orEmpty()
+        val clashes = r.time?.let { routineClashes(r.repeat, it, r.minutes ?: 30, id, today) }.orEmpty()
         return buildString {
-            append("Routine added: ${r.title.trim()} · ${Days.describe(r.daysMask)}")
+            append("Repeating to-do added: ${r.title.trim()} · ${r.repeat.describe()}")
             r.time?.let { append(" ${hm.format(it)}") }
             when {
                 !r.syncToCalendar -> Unit
@@ -617,9 +685,9 @@ class Repository(
      * dropped and recreated; today's unticked to-do is regenerated to match.
      */
     suspend fun updateRoutine(r: Routine, today: LocalDate): String {
-        if (r.daysMask == 0) return "Pick at least one day"
-        val old = db.routines().all().firstOrNull { it.id == r.id } ?: return "Routine not found"
-        val calendarChanged = old.title != r.title || old.daysMask != r.daysMask ||
+        if (!r.repeat.isValid) return "Pick at least one day"
+        val old = db.routines().all().firstOrNull { it.id == r.id } ?: return "Repeating to-do not found"
+        val calendarChanged = old.title != r.title || old.repeat != r.repeat ||
             old.time != r.time || old.minutes != r.minutes
         var next = r
         if (calendarChanged && old.calendarEventId != null) {
@@ -631,7 +699,7 @@ class Repository(
         ensureFor(today)
         val status = syncRoutines()
         changed()
-        val clashes = r.time?.let { routineClashes(r.daysMask, it, r.minutes ?: 30, r.id, today) }.orEmpty()
+        val clashes = r.time?.let { routineClashes(r.repeat, it, r.minutes ?: 30, r.id, today) }.orEmpty()
         return buildString {
             append(if (status.ok) "Saved “${r.title}”" else "Saved. ${status.message}")
             if (clashes.isNotEmpty()) append("\n⚠ Clashes: ").append(clashes.joinToString("; "))
@@ -639,14 +707,15 @@ class Repository(
     }
 
     /**
-     * What a routine on [mask] days at [time] would overlap in the next 4 weeks: events in your
+     * What a routine repeating per [repeat] at [time] would overlap in the next 4 weeks: events in your
      * linked calendars and your other routines. [excludeRoutineId] is the routine itself (its own
      * calendar event doesn't count).
      */
     suspend fun routineClashes(
-        mask: Int, time: LocalTime, minutes: Int, excludeRoutineId: Long?, from: LocalDate = LocalDate.now(),
+        repeat: Repeat, time: LocalTime, minutes: Int, excludeRoutineId: Long?, from: LocalDate = LocalDate.now(),
     ): List<String> {
-        val days = 28
+        // Long enough to catch monthly routines once or twice.
+        val days = if (repeat.unit == Repeat.Unit.MONTH) 62 else 28
         val routines = db.routines().all()
         val ownEvent = routines.firstOrNull { it.id == excludeRoutineId }?.calendarEventId
         val events = runCatching { eventsBetween(from, from.plusDays(days.toLong())) }.getOrDefault(emptyList())
@@ -659,9 +728,9 @@ class Repository(
             if (o.id == excludeRoutineId || !o.active || o.time == null) continue
             // A synced routine already shows up as a calendar event; don't count it twice.
             if (o.calendarEventId != null && o.calendarEventId in eventIds) continue
-            busy += Clashes.routineBusy(o.daysMask, o.time, o.minutes ?: 30, "${o.title} (routine)", from, days)
+            busy += Clashes.routineBusy(o.repeat, o.time, o.minutes ?: 30, "${o.title} (repeating)", from, days)
         }
-        return Clashes.summarise(Clashes.find(mask, time, minutes, from, days, busy))
+        return Clashes.summarise(Clashes.find(repeat, time, minutes, from, days, busy))
     }
 
     suspend fun setRoutineActive(r: Routine, active: Boolean) {
@@ -693,19 +762,19 @@ class Repository(
 
     /**
      * Makes Google Calendar match the routines: each active, timed routine that wants syncing gets
-     * one weekly recurring event in the routine calendar; events for routines that don't (or that
+     * one recurring event (following its repeat rule) in the routine calendar; events for routines that don't (or that
      * sit in a different calendar after you switch) are removed. If you delete a routine's event
      * in Google Calendar yourself, syncing is switched off for it rather than fighting you.
      */
     suspend fun syncRoutines(): SyncStatus = housekeeping.withLock {
         val routines = db.routines().all()
-        val wanted = { r: Routine -> r.active && r.syncToCalendar && r.time != null && r.daysMask != 0 }
+        val wanted = { r: Routine -> r.active && r.syncToCalendar && r.time != null && r.repeat.isValid }
 
         if (routines.none { wanted(it) || it.calendarEventId != null }) {
-            return@withLock SyncStatus(true, "No routines to sync").also { _syncStatus.value = it }
+            return@withLock SyncStatus(true, "Nothing repeating to sync").also { _syncStatus.value = it }
         }
         if (!calendar.hasWritePermission()) {
-            return@withLock SyncStatus(false, "Allow calendar access to sync routines").also { _syncStatus.value = it }
+            return@withLock SyncStatus(false, "Allow calendar access to sync repeating to-dos").also { _syncStatus.value = it }
         }
         val cals = calendar.calendars()
         val target = routineCalendar(cals).getOrElse { e ->
@@ -744,8 +813,8 @@ class Repository(
             }
             runCatching {
                 calendar.createRecurring(
-                    target.id, r.title, r.daysMask, r.time!!, r.minutes ?: 30,
-                    firstOccurrence(r.daysMask, LocalDate.now()),
+                    target.id, r.title, r.repeat.rrule(), r.time!!, r.minutes ?: 30,
+                    r.repeat.first(LocalDate.now()) ?: error("No upcoming day for this repeating to-do"),
                 )
             }.onSuccess { id ->
                 db.routines().update(r.copy(calendarEventId = id))
@@ -760,18 +829,13 @@ class Repository(
 
         val where = "“${target.name}” (${target.accountName})"
         val status = if (errors.isEmpty()) {
-            SyncStatus(true, "$synced routine${if (synced == 1) "" else "s"} in $where")
+            SyncStatus(true, "$synced repeating to-do${if (synced == 1) "" else "s"} in $where")
         } else {
             SyncStatus(false, "Couldn't sync ${errors.joinToString("; ")}")
         }
         _syncStatus.value = status
         status
     }
-
-    private fun firstOccurrence(mask: Int, from: LocalDate): LocalDate =
-        DayOfWeek.entries.filter { Days.has(mask, it) }
-            .map { from.with(TemporalAdjusters.nextOrSame(it)) }
-            .minOrNull() ?: from
 
     // ---------- calendar + travel ----------
 
@@ -863,7 +927,7 @@ class Repository(
 
         // Timed routines, even on days whose routine to-dos don't exist yet.
         val routineBusy = db.routines().all().filter { it.active && it.time != null }.flatMap { r ->
-            Clashes.routineBusy(r.daysMask, r.time!!, r.minutes ?: rules.defaultMinutes, r.title, today, days.size)
+            Clashes.routineBusy(r.repeat, r.time!!, r.minutes ?: rules.defaultMinutes, r.title, today, days.size)
         }
 
         // To-dos: what to place, and timed ones that block time.
@@ -919,7 +983,14 @@ class Repository(
             } else emptyList()
             created += ids
             val first = blocks.minWith(compareBy<Block>({ it.date }, { it.startMin }))
-            db.tasks().update(t.copy(date = first.date, time = first.start, plannedEvents = ids.joinToString(",")))
+            db.tasks().update(
+                t.copy(
+                    date = first.date, time = first.start, plannedEvents = ids.joinToString(","),
+                    sittings = Sittings.encode(blocks.sortedWith(compareBy({ it.date }, { it.startMin })).map { Sitting(it.date.atTime(it.start), it.minutes) }),
+                    // Newly timed by the planner: the Settings default reminder, if any.
+                    remindBefore = t.remindBefore ?: s.reminderLead,
+                )
+            )
         }
         if (cal != null) calendar.requestSync(cal.accountName)
         changed()
@@ -963,7 +1034,7 @@ class Repository(
                 isLog = t.genKey?.startsWith("l:") == true,
             )
         }
-        val routines = db.routines().all().map { RoutineInput(it.id, it.title, it.daysMask, it.active) }
+        val routines = db.routines().all().map { RoutineInput(it.id, it.title, it.daysMask, it.active, it.repeat) }
         return WeeklyReview.summarise(tasks, routines, today, weekStart)
     }
 
@@ -1048,17 +1119,36 @@ class Repository(
         } else null
         val reminders = if (s.remindTodos) {
             val routines = db.routines().all().associateBy { it.id }
-            val inputs = db.tasks().timedOpenBetween(today, today.plusDays(2)).mapNotNull { t ->
-                val date = t.date ?: return@mapNotNull null
-                val time = t.time ?: return@mapNotNull null
-                // A routine can switch its reminders off.
-                if (t.routineId != null && routines[t.routineId]?.remind == false) return@mapNotNull null
+            val timed = db.tasks().timedOpenBetween(today, today.plusDays(2))
+            val exact = db.tasks().remindAtBetween(today.atStartOfDay(), today.plusDays(2).atStartOfDay())
+            // Later sittings of split plans (the first is the to-do's own time).
+            val window = today.atStartOfDay() to today.plusDays(2).atStartOfDay()
+            val sittingInputs = db.tasks().withSittings().flatMap { t ->
+                val lead = t.remindBefore?.takeIf { it >= 0 } ?: return@flatMap emptyList()
+                val all = Sittings.decode(t.sittings)
+                all.withIndex().drop(1).filter { (_, s) -> !s.start.isBefore(window.first) && s.start.isBefore(window.second) }
+                    .map { (i, s) ->
+                        ReminderInput(
+                            taskId = t.id, title = "${t.title} (${i + 1}/${all.size})",
+                            date = s.start.toLocalDate(), time = s.start.toLocalTime(), leadMinutes = lead, minutes = s.minutes,
+                        )
+                    }
+            }
+            val inputs = sittingInputs + (timed + exact).distinctBy { it.id }.mapNotNull { t ->
+                val lead = when {
+                    t.remindAt != null -> -1
+                    // Routine to-dos remind at their start only if the routine says so.
+                    t.routineId != null -> if (routines[t.routineId]?.remind == true) 0 else -1
+                    else -> t.remindBefore ?: -1
+                }
+                if (lead < 0 && t.remindAt == null) return@mapNotNull null
                 ReminderInput(
                     taskId = t.id,
                     title = t.title + if (t.units > 1) " ×${t.units}" else "",
-                    date = date, time = time,
-                    leadMinutes = t.remindBefore ?: s.reminderLead,
+                    date = t.date ?: t.remindAt!!.toLocalDate(), time = t.time,
+                    leadMinutes = lead,
                     minutes = t.minutes,
+                    at = t.remindAt,
                 )
             }
             AlertPlanner.todoReminders(inputs, now)

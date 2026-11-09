@@ -20,7 +20,7 @@ data class BackupContents(
     val exportedAt: LocalDateTime?,
 ) {
     fun summary(): String = "${tasks.count { it.genKey?.startsWith("l:") != true }} to-dos, " +
-        "${goals.size} long-term tasks, ${routines.size} routines, ${tags.size} tags"
+        "${goals.size} goals, ${routines.size} repeating to-dos, ${tags.size} tags"
 }
 
 /**
@@ -73,8 +73,9 @@ object BackupCodec {
     private fun task(t: Task) = linkedMapOf<String, Any?>(
         "id" to t.id, "title" to t.title, "date" to t.date?.toString(), "category" to t.category,
         "minutes" to t.minutes, "time" to t.time?.hm(), "goalId" to t.goalId, "routineId" to t.routineId,
-        "units" to t.units, "remindBefore" to t.remindBefore, "priority" to t.priority,
+        "units" to t.units, "remindBefore" to t.remindBefore, "remindAt" to t.remindAt?.withNano(0)?.toString(), "priority" to t.priority,
         "deadline" to t.deadline?.toString(), "place" to t.place, "plannedEvents" to t.plannedEvents,
+        "sittings" to t.sittings, "skipped" to t.skipped,
         "genKey" to t.genKey, "done" to t.done, "doneAt" to t.doneAt, "createdAt" to t.createdAt,
     )
 
@@ -82,7 +83,9 @@ object BackupCodec {
         id = m.long("id"), title = m.str("title"), date = m.date("date"), category = m.optStr("category") ?: "OTHER",
         minutes = m.optInt("minutes"), time = m.time("time"), goalId = m.optLong("goalId"), routineId = m.optLong("routineId"),
         units = m.optInt("units") ?: 1, remindBefore = m.optInt("remindBefore"), priority = m.optStr("priority"),
+        remindAt = m.optStr("remindAt")?.let { runCatching { LocalDateTime.parse(it) }.getOrElse { throw BadBackup("bad remindAt “$it”") } },
         deadline = m.date("deadline"), place = m.optStr("place"), plannedEvents = m.optStr("plannedEvents"),
+        sittings = m.optStr("sittings"), skipped = m["skipped"] as? Boolean,
         genKey = m.optStr("genKey"), done = m["done"] == true, doneAt = m.optLong("doneAt"),
         createdAt = m.optLong("createdAt") ?: 0L,
     )
@@ -106,6 +109,7 @@ object BackupCodec {
         "id" to r.id, "title" to r.title, "category" to r.category, "minutes" to r.minutes, "daysMask" to r.daysMask,
         "active" to r.active, "time" to r.time?.hm(), "syncToCalendar" to r.syncToCalendar,
         "calendarEventId" to r.calendarEventId, "remind" to r.remind,
+        "repeatUnit" to r.repeatUnit, "repeatEvery" to r.repeatEvery, "repeatFrom" to r.repeatFrom?.toString(),
     )
 
     private fun routine(m: Map<*, *>) = Routine(
@@ -113,6 +117,7 @@ object BackupCodec {
         daysMask = m.int("daysMask"), active = m["active"] != false, time = m.time("time"),
         syncToCalendar = m["syncToCalendar"] != false, calendarEventId = m.optLong("calendarEventId"),
         remind = m["remind"] as? Boolean,
+        repeatUnit = m.optStr("repeatUnit"), repeatEvery = m.optInt("repeatEvery"), repeatFrom = m.date("repeatFrom"),
     )
 
     // ---------- settings (no calendar ids: those belong to one phone) ----------
@@ -141,7 +146,7 @@ object BackupCodec {
             morningSummary = m["morningSummary"] as? Boolean ?: d.morningSummary,
             morningTime = m.time("morningTime") ?: d.morningTime,
             remindTodos = m["remindTodos"] as? Boolean ?: d.remindTodos,
-            reminderLead = m.optInt("reminderLead") ?: d.reminderLead,
+            reminderLead = m.optInt("reminderLead")?.takeIf { it >= 0 },
             workStart = m.time("workStart") ?: d.workStart,
             workEnd = m.time("workEnd") ?: d.workEnd,
             breakMinutes = m.optInt("breakMinutes") ?: d.breakMinutes,

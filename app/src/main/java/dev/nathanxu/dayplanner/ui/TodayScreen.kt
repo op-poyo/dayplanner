@@ -5,6 +5,8 @@ import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,10 +20,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -40,7 +44,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -49,12 +52,17 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.nathanxu.dayplanner.calendar.CalendarSource
 import dev.nathanxu.dayplanner.data.GoalProgress
+import dev.nathanxu.dayplanner.data.Routine
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.data.TodayPlan
 import dev.nathanxu.dayplanner.domain.Labels
+import dev.nathanxu.dayplanner.domain.TodoSort
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.TimelineItem
+import dev.nathanxu.dayplanner.domain.DayRow
+import dev.nathanxu.dayplanner.domain.NextUp
+import dev.nathanxu.dayplanner.domain.TodayView
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -62,6 +70,11 @@ import java.time.format.DateTimeFormatter
 private val hm = DateTimeFormatter.ofPattern("HH:mm")
 private val dayFmt = DateTimeFormatter.ofPattern("EEE d MMM")
 
+/**
+ * Today, in the order you need it: one banner (slipped plans or the weekly review), Next up, one
+ * timeline (events, travel and timed to-dos together), the to-dos with no time, a collapsed
+ * Later line, and a thin strip of goals. Adding things is the box at the bottom of the screen.
+ */
 @Composable
 fun TodayScreen(
     today: LocalDate,
@@ -71,10 +84,12 @@ fun TodayScreen(
     goals: List<GoalProgress>,
     tags: List<Tag>,
     loading: Boolean,
+    /** Repeating to-dos, so their own calendar events don't show twice. */
+    routines: List<Routine>,
+    /** "3 tomorrow · 5 someday". */
+    later: String,
     onOpenGoals: () -> Unit,
-    quickAddFocus: FocusRequester,
-    onQuickAdd: (String) -> Unit,
-    onExpandTodo: (String) -> Unit,
+    onOpenTodos: () -> Unit,
     onToggle: (Task) -> Unit,
     onDelete: (Task) -> Unit,
     onEditTask: (Task) -> Unit,
@@ -85,152 +100,232 @@ fun TodayScreen(
     onPlan: () -> Unit = {},
     reviewDue: Boolean = false,
     onReview: () -> Unit = {},
+    sort: TodoSort = TodoSort.DATE,
+    onSort: (TodoSort) -> Unit = {},
+    /** Tick an upcoming to-do (it then leaves the list, so the caller offers Undo). */
+    onTickUpcoming: (Task) -> Unit = onToggle,
+    showSwipeTip: Boolean = false,
+    onDismissSwipeTip: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
-    var showSyntax by rememberSaveable { mutableStateOf(false) }
+    var showLater by rememberSaveable { mutableStateOf(false) }
+    val goalsById = goals.associateBy { it.goal.id }
+    val tagOf = { t: Task -> Tags.find(t.category, tags) }
+
+    // Timed to-dos for today go on the timeline; the rest (and overdue ones) are "Anytime".
+    val timed = tasks.filter { it.date == today && it.time != null }
+    val anytimeAll = tasks.filter { it !in timed }
+    val anytime = if (sort == TodoSort.DATE) anytimeAll else {
+        val tagName = { t: Task -> tagOf(t).takeIf { it.key != Tags.OTHER }?.name }
+        TodoSort.sorted(anytimeAll.filter { !it.done }, sort) { sortFields(it, tagName(it)) } + anytimeAll.filter { it.done }
+    }
+    // Their calendar events would repeat the to-do rows: planned blocks, and a repeating to-do's event.
+    val routineEvents = routines.associate { it.id to it.calendarEventId }
+    val hidden = timed.flatMap { t ->
+        t.plannedEvents.orEmpty().split(',').mapNotNull { it.trim().toLongOrNull() } + listOfNotNull(t.routineId?.let { routineEvents[it] })
+    }.toSet()
+    val rows = plan?.takeIf { it.calendarConnected }?.let { p ->
+        TodayView.merge(p.items, timed, { it.time!! }, { it.minutes }, today, hidden)
+    } ?: timed.sortedBy { it.time }.map { DayRow.Todo(it, it.time!!) }
+    val next = TodayView.nextUp(
+        plan?.items.orEmpty().filterIsInstance<TimelineItem.Event>().map { it.event }.filter { it.id !in hidden },
+        timed.filter { !it.done }.map { Triple(it.title, today.atTime(it.time!!), it.minutes) },
+        LocalDateTime.now(),
+    )
+    val openCount = tasks.count { !it.done }
 
     LazyColumn(
         contentPadding = PaddingValues(
             start = 16.dp, end = 16.dp,
             top = contentPadding.calculateTopPadding() + 8.dp,
-            bottom = contentPadding.calculateBottomPadding() + 88.dp,
+            bottom = contentPadding.calculateBottomPadding() + 16.dp,
         ),
     ) {
-        item {
-            QuickAddBar(
-                placeholder = "Problem sheet fri #study 1h",
-                onSubmit = onQuickAdd,
-                onExpand = onExpandTodo,
-                focusRequester = quickAddFocus,
-            )
-            TextButton(onClick = { showSyntax = !showSyntax }) {
-                Text(if (showSyntax) "Hide syntax" else "Quick-add syntax")
-            }
-            if (showSyntax) SyntaxCard()
-        }
-
-        if (reviewDue) item {
-            Card(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-            ) {
-                Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Weekly review", style = MaterialTheme.typography.titleSmall)
-                        Text("See how the week went and plan the next one.", style = MaterialTheme.typography.bodySmall)
-                    }
-                    TextButton(onClick = onReview) { Text("Open") }
-                }
-            }
-        }
-
-        // ---------- schedule ----------
         if (plan?.needsAccountChoice == true) item {
-            Card(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer),
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("You have more than one Google account. Pick the one this app should use.")
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = onOpenSettings) { Text("Choose account") }
-                }
-            }
+            Banner("You have more than one Google account. Pick the one this app should use.", "Choose", MaterialTheme.colorScheme.tertiaryContainer, onOpenSettings)
         }
-        item { SectionHeader("Schedule") }
-        if (loading && plan == null) item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
+        // One banner at most: slipped plans matter more than the review.
         when {
-            plan == null -> Unit
-            !plan.calendarConnected -> item {
-                Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("See your Google Calendar here, with travel time between places.")
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = onConnectCalendar) { Text("Connect calendar") }
-                    }
+            slipped.isNotEmpty() -> item {
+                Banner(
+                    if (slipped.size == 1) "“${slipped.first().title}” slipped past its planned time."
+                    else "${slipped.size} planned to-dos slipped past their time.",
+                    "Re-plan", MaterialTheme.colorScheme.secondaryContainer, onPlan,
+                )
+            }
+            reviewDue -> item { Banner("Weekly review: how the week went, and the next one.", "Open", MaterialTheme.colorScheme.primaryContainer, onReview) }
+        }
+        if (showSwipeTip && tasks.isNotEmpty()) item {
+            Row(Modifier.fillMaxWidth().padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Tip: swipe a to-do right to tick it, left to delete.",
+                    Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onDismissSwipeTip) { Text("Got it") }
+            }
+        }
+
+        // ---------- next up ----------
+        next?.let { n -> item { NextUpCard(n) } }
+
+        // ---------- timeline ----------
+        item { SectionHeader("Today") }
+        if (loading && plan == null) item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
+        if (plan != null && !plan.calendarConnected) item {
+            Banner("See your Google Calendar here, with travel time between places.", "Connect", MaterialTheme.colorScheme.surfaceVariant, onConnectCalendar)
+        }
+        if (rows.isEmpty() && plan?.calendarConnected == true) item {
+            Text("Nothing at a set time today.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
+        }
+        itemsIndexed(rows, key = { i, r ->
+            when (r) {
+                is DayRow.Todo<*> -> "t${(r.todo as Task).id}"
+                is DayRow.Cal -> when (val x = r.item) {
+                    is TimelineItem.Event -> "e${x.event.id}-${x.event.start}"
+                    is TimelineItem.Travel -> "v$i"
+                    is TimelineItem.Free -> "f$i"
                 }
             }
-            plan.items.isEmpty() -> item {
-                Text("Nothing in your calendar today.", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            else -> {
-                items(plan.items) { item ->
-                    when (item) {
-                        is TimelineItem.Event -> EventRow(item) {
-                            ctx.safeStart { startActivity(CalendarSource.openDayIntent(today)) }
-                        }
-                        is TimelineItem.Travel -> TravelRow(item, plan.travelEnabled)
-                        is TimelineItem.Free -> FreeRow(item)
-                    }
+        }) { _, r ->
+            when (r) {
+                is DayRow.Todo<*> -> {
+                    val t = r.todo as Task
+                    TaskRow(
+                        modifier = Modifier.animateItem(), task = t, today = today, tag = tagOf(t),
+                        goal = t.goalId?.let { goalsById[it] },
+                        onToggle = { onToggle(t) }, onEdit = { onEditTask(t) }, onDelete = { onDelete(t) },
+                        onBlock = { ctx.blockTime(t, plan) },
+                    )
+                }
+                is DayRow.Cal -> when (val item = r.item) {
+                    is TimelineItem.Event -> EventRow(item) { ctx.safeStart { startActivity(CalendarSource.openDayIntent(today)) } }
+                    is TimelineItem.Travel -> TravelRow(item, plan?.travelEnabled == true)
+                    is TimelineItem.Free -> FreeRow(item)
                 }
             }
         }
 
-        // ---------- goals at a glance ----------
-        if (goals.isNotEmpty()) {
-            item { SectionHeader("Goals") }
-            items(goals.take(5), key = { "g${it.goal.id}" }) { gp -> GoalGlance(gp, onOpenGoals) }
-        }
-
-        // ---------- tasks ----------
-        val goalsById = goals.associateBy { it.goal.id }
-        val open = tasks.count { !it.done }
+        // ---------- anytime ----------
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                SectionHeader(if (tasks.isEmpty()) "To-do" else "To-do · $open left", Modifier.weight(1f))
-                if (open > 0) TextButton(onClick = onPlan) { Text("Plan my day") }
+                val left = anytime.count { !it.done }
+                SectionHeader(if (anytime.isEmpty()) "Anytime" else "Anytime · $left left", Modifier.weight(1f))
+                if (left > 1) SortMenu(sort, onSort)
+                if (openCount > 0) TextButton(onClick = onPlan) { Text("Plan my day") }
             }
         }
-        if (slipped.isNotEmpty()) item {
-            Card(
-                Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-            ) {
-                Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (slipped.size == 1) "“${slipped.first().title}” slipped past its planned time."
-                        else "${slipped.size} planned to-dos slipped past their time.",
-                        Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
-                    )
-                    TextButton(onClick = onPlan) { Text("Re-plan") }
-                }
-            }
+        if (anytime.isEmpty()) item {
+            EmptyNote(if (tasks.isEmpty()) "Nothing for today. Type one in the box below, or ✎ for the full form." else "Everything else has a time.")
         }
-        if (tasks.isEmpty()) item {
-            EmptyNote("Nothing to do. Type one above, tap ✎ for the full form, or set up routines.")
-        }
-        items(tasks, key = { it.id }) { task ->
+        items(anytime, key = { "a${it.id}" }) { task ->
             TaskRow(
-                modifier = Modifier.animateItem(),
-                task = task,
-                today = today,
-                tag = Tags.find(task.category, tags),
+                modifier = Modifier.animateItem(), task = task, today = today, tag = tagOf(task),
                 goal = task.goalId?.let { goalsById[it] },
-                onToggle = { onToggle(task) },
-                onEdit = { onEditTask(task) },
-                onDelete = { onDelete(task) },
+                onToggle = { onToggle(task) }, onEdit = { onEditTask(task) }, onDelete = { onDelete(task) },
                 onBlock = { ctx.blockTime(task, plan) },
             )
         }
 
-        if (upcoming.isNotEmpty()) {
-            item { SectionHeader("Upcoming") }
-            items(upcoming.take(15), key = { "u${it.id}" }) { task ->
+        // ---------- later (collapsed) ----------
+        if (later.isNotEmpty()) {
+            item {
                 Row(
-                    Modifier.fillMaxWidth().clickable { onEditTask(task) }.padding(vertical = 6.dp),
+                    Modifier.fillMaxWidth().clickable { showLater = !showLater }.padding(top = 16.dp, bottom = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        task.date?.format(dayFmt) ?: "",
-                        modifier = Modifier.width(92.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    TagDot(Tags.find(task.category, tags).color, 8.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text(task.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Later", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.width(8.dp))
+                    Text(later, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(if (showLater) "▴" else "▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            if (showLater) {
+                items(upcoming.take(15), key = { "u${it.id}" }) { task ->
+                    SwipeRow(done = false, onToggle = { onTickUpcoming(task) }, onDelete = { onDelete(task) }, modifier = Modifier.animateItem()) {
+                        Row(Modifier.fillMaxWidth().clickable { onEditTask(task) }, verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = false, onCheckedChange = { onTickUpcoming(task) })
+                            Text(
+                                task.date?.format(dayFmt) ?: "", modifier = Modifier.width(92.dp),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            TagDot(tagOf(task).color, 8.dp)
+                            Spacer(Modifier.width(6.dp))
+                            PriorityMark(task.priority)
+                            Text(task.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+                item {
+                    TextButton(onClick = onOpenTodos) { Text("All to-dos, including someday ›") }
+                }
+            }
+        }
+
+        // ---------- goals strip ----------
+        if (goals.isNotEmpty()) item {
+            Row(
+                Modifier.fillMaxWidth().padding(top = 16.dp).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                goals.take(8).forEach { gp ->
+                    AssistChip(
+                        onClick = onOpenGoals,
+                        label = { Text("${gp.goal.title} ${gp.status.percent}%", maxLines = 1) },
+                        leadingIcon = { TagDot(Tags.find(gp.goal.category, tags).color, 8.dp) },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** The one banner Today shows: a message and an action. */
+@Composable
+private fun Banner(text: String, action: String, color: Color, onAction: () -> Unit) {
+    Card(Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = color)) {
+        Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            TextButton(onClick = onAction) { Text(action) }
+        }
+    }
+}
+
+/** What's on now, or next: "In 25 min · 14:00–15:00 · Roberts 106". */
+@Composable
+private fun NextUpCard(n: NextUp) {
+    val now = LocalDateTime.now()
+    val mins = java.time.Duration.between(now, n.start).toMinutes()
+    val whenText = when {
+        n.ongoing -> "Now" + (n.end?.let { " · until ${it.format(hm)}" } ?: "")
+        mins < 60 -> "In ${mins.coerceAtLeast(1)} min · ${n.start.format(hm)}"
+        else -> "At ${n.start.format(hm)}"
+    }
+    Card(Modifier.fillMaxWidth().padding(top = 8.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Text(if (n.ongoing) "Now" else "Next up", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onPrimaryContainer)
+            Text(n.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                listOfNotNull(whenText, n.location?.takeIf { it.isNotBlank() }).joinToString(" · "),
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onPrimaryContainer,
+            )
+        }
+    }
+}
+
+/** The quick-add syntax as a sheet (from the ? in the quick-add box). */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+fun SyntaxSheet(onDismiss: () -> Unit) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(start = 16.dp, end = 16.dp, bottom = 32.dp)) {
+            Text("Quick-add", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+            Text(
+                "Type a title, then any of these in any order:",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+            SyntaxCard()
         }
     }
 }
@@ -306,30 +401,6 @@ private fun FreeRow(item: TimelineItem.Free) {
 }
 
 @Composable
-private fun GoalGlance(gp: GoalProgress, onClick: () -> Unit) {
-    val s = gp.status
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 5.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(
-            gp.goal.title, modifier = Modifier.weight(1f),
-            maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyMedium,
-        )
-        LinearProgressIndicator(progress = { s.fraction }, modifier = Modifier.width(90.dp).padding(horizontal = 8.dp))
-        Text(
-            "${s.percent}%", modifier = Modifier.width(40.dp),
-            style = MaterialTheme.typography.labelLarge,
-            color = when {
-                s.complete -> MaterialTheme.colorScheme.primary
-                (s.paceDelta ?: 0) < 0 -> MaterialTheme.colorScheme.error
-                else -> MaterialTheme.colorScheme.onSurface
-            },
-        )
-    }
-}
-
-@Composable
 private fun TaskRow(
     modifier: Modifier = Modifier,
     task: Task,
@@ -394,10 +465,12 @@ val SYNTAX_ROWS = listOf(
     "18:30 / 6pm" to "time",
     "45m / 1h30" to "duration",
     "#study #gym #piano" to "tag (a new name creates a new tag)",
-    "^leetcode" to "counts towards a long-term task",
-    "@week / @month" to "make it a long-term task for this week/month",
+    "^leetcode" to "counts towards a goal",
+    "@week / @month" to "make it a goal for this week/month",
     "x5" to "how many times in total",
-    "!r" to "repeat when it ends",
+    "daily / weekdays / every mon,wed" to "repeats (a repeating to-do)",
+    "every 2 weeks tue / every 3 days / monthly" to "other repeats",
+    "!r" to "goal: start again when it ends",
     "!high / !low  (or !! / !1 / !3)" to "priority",
     "by fri / due 14/11" to "deadline (with no date, the planner picks a day before it)",
     "14/11" to "a date (day/month)",

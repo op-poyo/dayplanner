@@ -1,4 +1,64 @@
-# Test plan: v1.6.1 → v1.8
+# Test plan: v1.6.1 → v1.10
+
+## v1.10 reorganisation (10 min)
+
+| # | Do | Expect |
+|---|---|---|
+| O1 | Look at the tabs | Today · Calendar · To-dos · Goals. Your routines are under To-dos → *Repeating*, unchanged |
+| O2 | Tap the box at the bottom on Today, type `Gym 18:00 1h every mon,wed` | "Repeating to-do added … · added to Google Calendar"; it's in To-dos → Repeating |
+| O3 | Type `Standup 9:30 weekdays`, then `Water plants every 3 days`, then `Rent 1/12 monthly` | Each a repeating to-do with the right rule |
+| O4 | Type a normal one (`Essay 2h by fri !high`) | A to-do as before |
+| O5 | Tap **?** in the box | Syntax sheet, including the repeat words |
+| O6 | Tap in the box | The tab bar hides and the box sits on the keyboard; back/done brings it back |
+| O7 | Today with a lecture and a timed to-do | Next up card at the top; one list mixing events and timed to-dos in time order; a planned block or repeating to-do shows **once** (not as event + to-do) |
+| O8 | Today's untimed to-dos | Under *Anytime*, with Sort and Plan my day; someday ones are **not** on Today |
+| O9 | Tap the **Later** line | Expands to upcoming (tick works); "All to-dos, including someday ›" opens To-dos |
+| O10 | Goal strip at the bottom of Today | Chips with %, tap → Goals |
+| O11 | Goals tab | *New goal*, *Weekly review*, then goals; no box confusion (box makes goals with `x15 @month`) |
+| O12 | New to-do form → *Make it repeat…* | Repeating form with the title/time filled in |
+| O13 | Open a repeating to-do's to-do on Today → *Edit the repeating to-do (all days)* | Its repeating form |
+| O14 | Settings | Index page with status lines; tap a row opens it; back returns to the index, back again leaves |
+| O15 | The swipe tip | Shows once; *Got it* hides it for good |
+
+---
+
+
+## v1.9 (10 min)
+
+| # | Do | Expect |
+|---|---|---|
+| N1 | Routines → New routine → Repeats: Every **2** **week**s, Mon, starting this week, 10:00 | Line under it: "Every 2 weeks · Mon · next …"; saved; in Google Calendar every other Monday |
+| N2 | New routine: Every **1** **month**, first one = the 31st of a month | "Monthly on the 31st"; Calendar shows 30 Nov / 31 Dec / 28 Feb… |
+| N3 | New routine: Every **3** **day**s from today | A to-do for it on Today; "Every 3 days · next today" |
+| N4 | Existing weekly routine | Unchanged (same days, same Calendar event) |
+| N5 | Today: delete (swipe left) a routine's to-do | "Skipped … for that day · Undo"; tap ↻ or reopen the app → it does **not** come back. Undo → it's back |
+| N6 | Same with a long-term task's ×n daily to-do | Skipped; doesn't come back today |
+| N7 | 🔍 top bar → type part of a title, then a tag name, then a place | Matching to-dos (open + done), long-term tasks, routines; tap opens the form; ticking works |
+| N8 | Tasks → Long-term → edit an active task → **Finish now** | Moves to Finished with its %; Undo brings it back |
+| N9 | Finished → bin icon on one → Undo; then **Clear all** → Undo | Deleted / restored both times |
+| N10 | Plan a 3 h to-do with *Remind me* = At time (so it splits) → Accept → Settings → Planning & alerts → Scheduled | One reminder per sitting ("Essay (2/2)") |
+| N11 | Tomorrow morning: widget | Already shows the new day |
+
+---
+
+
+## v1.8.1 re-test (10 min) — do this first
+
+| # | Do | Expect |
+|---|---|---|
+| R1 | Swipe a to-do left (delete) → **Undo** | It comes back and **stays** |
+| R2 | New to-do with a time | *Remind me* starts on **Off** |
+| R3 | Same form → **Pick time…** → a time 2 min from now → Save | Notification at that time ("Starts at …"), with Done / Snooze |
+| R4 | A dated to-do with **no** time → Pick time… 2 min ahead | Notification "Reminder" |
+| R5 | Settings → **Planning & alerts** → *New timed to-dos remind*: 5 min before → quick-add `Test 18:00` (pick a time 10 min ahead) | Notification 5 min before |
+| R6 | Settings tabs | *Travel* has only home / mode / buffer; *Planning & alerts* has planning then alerts + Scheduled |
+| R7 | Today → *Upcoming* → tick one (checkbox or swipe right) | Disappears with "Ticked … · Undo"; Undo brings it back |
+| R8 | Today → *Sort: Date ▾* → Priority, then Tag | High-priority first / grouped by tag; still that way after reopening the app |
+| R9 | Tasks → All to-dos → Sort: Priority, then Tag | Sections High / Normal / Low, then one per tag |
+| R10 | Quick-add boxes | Hints read like `Essay 2h by fri !high #study` |
+
+---
+
 
 About 45 minutes. Reply with the step numbers and ✅ / ❌ (plus a screenshot or one line for each ❌).
 Do the parts in order; part 6 deliberately wipes and restores the app, so it's last.
@@ -36,7 +96,7 @@ Do the parts in order; part 6 deliberately wipes and restores the app, so it's l
 | # | Do | Expect |
 |---|---|---|
 | 2.1 | New to-do "Reminder test" with a time **3 min from now**; *Remind me* = At time | — |
-| 2.2 | Settings ⚙ → Travel & alerts → *Scheduled* | "Reminder test" listed at that time |
+| 2.2 | Settings ⚙ → Planning & alerts → *Scheduled* | "Reminder test" listed at that time |
 | 2.3 | Wait | Notification "Reminder test · Now" with **Done** and **Snooze 10 min** |
 | 2.4 | Tap **Snooze** | It disappears, comes back ~10 min later saying *Snoozed* |
 | 2.5 | Tap **Done** on the snoozed one | To-do ticked in the app **and on the widget** |
@@ -83,7 +143,7 @@ Set up: 3–4 to-dos for today **without a time**, with durations (e.g. 30 min, 
 
 | # | Do | Expect |
 |---|---|---|
-| 5.1 | Settings → Travel & alerts → *Weekly review* → **Open this week's review** | Done count + bars per day (today highlighted), by tag, routines (e.g. Gym 1/2), long-term %, Slipped, Next week |
+| 5.1 | Settings → Planning & alerts → *Weekly review* → **Open this week's review** | Done count + bars per day (today highlighted), by tag, routines (e.g. Gym 1/2), long-term %, Slipped, Next week |
 | 5.2 | On a slipped to-do tap *Today* / *Next Mon* / *Someday* / *Done* | It moves (disappears from Slipped) |
 | 5.3 | **‹ Earlier** | Last week's numbers; *Later ›* comes back |
 | 5.4 | **Plan the next 7 days** | Planner opens on *Week* |

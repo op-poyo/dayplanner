@@ -43,4 +43,16 @@ class RemindersTest {
         val b = AlertPlanner.todoReminders(listOf(r(1, LocalTime.of(19, 0), 0)), now).single()
         assertTrue(a.key != b.key)
     }
+
+    @Test fun exactTimeReminders() {
+        val withTime = ReminderInput(3, "Essay", d, LocalTime.of(18, 0), -1, 60, at = d.atTime(14, 0))
+        val untimed = ReminderInput(4, "Call bank", d, null, -1, at = d.atTime(15, 30))
+        val past = ReminderInput(5, "Gone", d, null, -1, at = d.atTime(9, 0))
+        val noTimeNoAt = ReminderInput(6, "Nothing", d, null, 0)
+        val alerts = AlertPlanner.todoReminders(listOf(withTime, untimed, past, noTimeNoAt), now)
+        assertEquals(listOf(3L, 4L), alerts.map { it.taskId })
+        assertEquals(d.atTime(14, 0), alerts[0].at)
+        assertEquals("Starts at 18:00 · 1 h", alerts[0].body)
+        assertEquals("Reminder", alerts[1].body)
+    }
 }

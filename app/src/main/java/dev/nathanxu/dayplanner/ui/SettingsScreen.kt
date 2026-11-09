@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
@@ -31,8 +32,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
-import androidx.compose.material3.Tab
-import androidx.compose.material3.ScrollableTabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -88,26 +87,83 @@ fun SettingsScreen(
     alertState: AlertState,
     actions: SettingsActions,
     contentPadding: PaddingValues,
+    /** Which section is open (index into [SETTINGS_SECTIONS]); null = the index page. */
+    section: Int? = null,
+    onSection: (Int) -> Unit = {},
 ) {
-    var tab by rememberSaveable { mutableIntStateOf(0) }
     Column(
         Modifier.fillMaxSize().padding(
             top = contentPadding.calculateTopPadding(),
             bottom = contentPadding.calculateBottomPadding(),
         ),
     ) {
-        ScrollableTabRow(selectedTabIndex = tab, edgePadding = 0.dp) {
-            listOf("Calendars", "Travel & alerts", "Planning", "Tags", "Backup", "Syntax").forEachIndexed { i, label ->
-                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(label) })
-            }
-        }
-        when (tab) {
+        when (section) {
+            null -> SettingsIndex(settings, calendars, syncStatus, tags, travelEnabled, alertState, onSection)
             0 -> CalendarsTab(settings, calendars, syncStatus, canWriteCalendar, actions)
-            1 -> TravelTab(settings, travelEnabled, alertState, actions)
-            2 -> PlanningTab(settings, tags, actions)
+            1 -> TravelTab(settings, travelEnabled, actions)
+            2 -> PlanningTab(settings, tags, alertState, actions)
             3 -> TagsTab(tags, actions)
             4 -> BackupTab(actions)
             else -> SyntaxTab()
+        }
+    }
+}
+
+/** Settings sections: title and what's in it. The index page shows these with a live summary. */
+val SETTINGS_SECTIONS = listOf(
+    "Calendars" to "Accounts, which calendars show, sync",
+    "Travel" to "Home, how you travel, buffer",
+    "Planning & alerts" to "Planning hours, protected time, places, reminders, review",
+    "Tags" to "Names and colours",
+    "Backup" to "Save or restore everything",
+    "Syntax" to "Quick-add shortcuts",
+)
+
+@Composable
+private fun SettingsIndex(
+    settings: SettingsState,
+    calendars: List<CalInfo>,
+    syncStatus: SyncStatus?,
+    tags: List<Tag>,
+    travelEnabled: Boolean,
+    alertState: AlertState,
+    onSection: (Int) -> Unit,
+) {
+    val hm = DateTimeFormatter.ofPattern("HH:mm")
+    val accounts = settings.accounts?.size ?: calendars.map { it.accountName }.distinct().size
+    val status = listOf(
+        listOfNotNull(
+            "$accounts account${if (accounts == 1) "" else "s"}",
+            syncStatus?.let { if (it.ok) "sync ✓" else "sync ⚠" },
+        ).joinToString(" · "),
+        when {
+            !travelEnabled -> "Travel times off (no Maps key)"
+            settings.home == null -> "No home set"
+            else -> "Home set · " + settings.travelMode.lowercase().replaceFirstChar(Char::uppercase)
+        },
+        "Plan ${settings.workStart.format(hm)}–${if (settings.workEnd == LocalTime.MAX) "24:00" else settings.workEnd.format(hm)}" +
+            (if (!alertState.notificationsOn) " · notifications off" else "") +
+            " · ${alertState.upcoming.size} alert${if (alertState.upcoming.size == 1) "" else "s"} scheduled",
+        "${tags.size} tag${if (tags.size == 1) "" else "s"}",
+        "",
+        "",
+    )
+    LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+        items(SETTINGS_SECTIONS.indices.toList()) { i ->
+            val (title, about) = SETTINGS_SECTIONS[i]
+            Row(
+                Modifier.fillMaxWidth().clickable { onSection(i) }.padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(title, style = MaterialTheme.typography.titleMedium)
+                    Text(about, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    status[i].takeIf { it.isNotEmpty() }?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+                Text("›", style = MaterialTheme.typography.titleLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
         }
     }
 }
@@ -136,7 +192,7 @@ private fun CalendarsTab(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
             ) {
                 Column(Modifier.padding(16.dp)) {
-                    Text("Calendar access is off. It's needed to show your schedule and add routines to Google Calendar.")
+                    Text("Calendar access is off. It's needed to show your schedule and add repeating to-dos and plans to Google Calendar.")
                     Spacer(Modifier.height(8.dp))
                     Button(onClick = a.requestCalendar) { Text("Allow calendar access") }
                 }
@@ -182,9 +238,9 @@ private fun CalendarsTab(
 
         if (writable.isNotEmpty()) {
             item {
-                SectionHeader("Calendar for routines")
+                SectionHeader("Calendar DayPlanner writes to")
                 Text(
-                    "Routines with a time become repeating events here. Changing it moves them.",
+                    "Repeating to-dos with a time, and Plan my day blocks, go here. Changing it moves the repeating ones.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -206,7 +262,7 @@ private fun CalendarsTab(
         }
 
         item {
-            SectionHeader("Routine sync")
+            SectionHeader("Repeating to-do sync")
             Text(
                 syncStatus?.let {
                     (if (it.ok) "✓ " else "⚠ ") + it.message + " · " + it.at.format(DateTimeFormatter.ofPattern("HH:mm"))
@@ -214,7 +270,7 @@ private fun CalendarsTab(
                 color = if (syncStatus?.ok == false) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = a.syncNow) { Text("Sync routines now") }
+            OutlinedButton(onClick = a.syncNow) { Text("Sync now") }
             Text(
                 "Missing a calendar you subscribed to by link (e.g. a uni timetable)? Google often adds those " +
                     "with phone sync off — it shows as “Not synced to this phone” above; tap Turn on sync. " +
@@ -256,8 +312,7 @@ private val modes = listOf("TRANSIT" to "Public transport", "WALK" to "Walk", "B
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun TravelTab(settings: SettingsState, travelEnabled: Boolean, alertState: AlertState, a: SettingsActions) {
-    val ctx = LocalContext.current
+private fun TravelTab(settings: SettingsState, travelEnabled: Boolean, a: SettingsActions) {
     var home by remember(settings.home) { mutableStateOf(settings.home ?: "") }
 
     LazyColumn(contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 32.dp)) {
@@ -301,107 +356,112 @@ private fun TravelTab(settings: SettingsState, travelEnabled: Boolean, alertStat
             }
         }
 
-        item {
-            SectionHeader("Notifications")
-            if (!alertState.notificationsOn) {
-                Card(
-                    Modifier.fillMaxWidth().padding(bottom = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                ) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Notifications are off for DayPlanner.")
-                        Spacer(Modifier.height(8.dp))
-                        Button(onClick = a.requestNotifications) { Text("Allow notifications") }
-                    }
+    }
+}
+
+/** The alerts part of Planning & alerts: switches, times, and what's scheduled. */
+private fun LazyListScope.alertItems(settings: SettingsState, alertState: AlertState, a: SettingsActions) {
+    item {
+        val ctx = LocalContext.current
+        SectionHeader("Alerts")
+        if (!alertState.notificationsOn) {
+            Card(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+            ) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Notifications are off for DayPlanner.")
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = a.requestNotifications) { Text("Allow notifications") }
                 }
             }
-            if (!alertState.exactAlarms) {
-                Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                    Column(Modifier.padding(16.dp)) {
-                        Text("Exact alarms are off, so alerts may arrive a few minutes late.")
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedButton(onClick = a.openExactAlarmSettings) { Text("Allow exact alarms") }
-                    }
+        }
+        if (!alertState.exactAlarms) {
+            Card(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Exact alarms are off, so alerts may arrive a few minutes late.")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(onClick = a.openExactAlarmSettings) { Text("Allow exact alarms") }
                 }
             }
-            ToggleRow(
-                "Leave-now alerts",
-                "Fires at start − travel time − buffer, for events with a location.",
-                settings.leaveAlerts,
-            ) { on -> a.updateTravel { it.copy(leaveAlerts = on) } }
-            ToggleRow("To-do reminders", "For to-dos with a time. Each to-do can override this.", settings.remindTodos) { on ->
-                a.updateTravel { it.copy(remindTodos = on) }
-            }
-            if (settings.remindTodos) {
-                Text("Remind by default", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(0 to "At time", 5 to "5 min before", 15 to "15 min before", 30 to "30 min before").forEach { (v, label) ->
-                        FilterChip(
-                            selected = settings.reminderLead == v,
-                            onClick = { a.updateTravel { it.copy(reminderLead = v) } },
-                            label = { Text(label) },
-                        )
-                    }
-                }
-            }
-            ToggleRow("Morning summary", "Your events and to-dos for the day.", settings.morningSummary) { on ->
-                a.updateTravel { it.copy(morningSummary = on) }
-            }
-            if (settings.morningSummary) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Summary time", Modifier.weight(1f))
-                    OutlinedButton(onClick = {
-                        val t = settings.morningTime
-                        TimePickerDialog(ctx, { _, h, m -> a.updateTravel { it.copy(morningTime = LocalTime.of(h, m)) } }, t.hour, t.minute, true).show()
-                    }) { Text(settings.morningTime.format(DateTimeFormatter.ofPattern("HH:mm"))) }
-                }
-            }
-            ToggleRow("Weekly review", "A look back at the week, and a nudge to plan the next.", settings.weeklyReview) { on ->
-                a.updateTravel { it.copy(weeklyReview = on) }
-            }
-            if (settings.weeklyReview) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    java.time.DayOfWeek.entries.forEach { d ->
-                        FilterChip(
-                            selected = settings.reviewDay == d,
-                            onClick = { a.updateTravel { it.copy(reviewDay = d) } },
-                            label = { Text(d.name.take(3).lowercase().replaceFirstChar(Char::uppercase)) },
-                        )
-                    }
+        }
+        ToggleRow(
+            "Leave-now alerts",
+            "Fires at start − travel time − buffer, for events with a location (needs travel times; see Travel).",
+            settings.leaveAlerts,
+        ) { on -> a.updateTravel { it.copy(leaveAlerts = on) } }
+        ToggleRow("To-do reminders", "Off switches every to-do reminder. Each to-do picks its own in its form.", settings.remindTodos) { on ->
+            a.updateTravel { it.copy(remindTodos = on) }
+        }
+        if (settings.remindTodos) {
+            Text("New timed to-dos remind", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(top = 4.dp, bottom = 4.dp))
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf<Pair<Int?, String>>(null to "Off", 0 to "At time", 5 to "5 min before", 15 to "15 min before", 30 to "30 min before").forEach { (v, label) ->
                     FilterChip(
-                        selected = false,
-                        onClick = {
-                            val t = settings.reviewTime
-                            TimePickerDialog(ctx, { _, h, m -> a.updateTravel { it.copy(reviewTime = LocalTime.of(h, m)) } }, t.hour, t.minute, true).show()
-                        },
-                        label = { Text("at " + settings.reviewTime.format(DateTimeFormatter.ofPattern("HH:mm"))) },
+                        selected = settings.reminderLead == v,
+                        onClick = { a.updateTravel { it.copy(reminderLead = v) } },
+                        label = { Text(label) },
                     )
                 }
-                TextButton(onClick = a.openReview) { Text("Open this week's review") }
             }
-            OutlinedButton(onClick = a.testNotification, modifier = Modifier.padding(top = 12.dp)) { Text("Send test notification") }
         }
+        ToggleRow("Morning summary", "Your events and to-dos for the day.", settings.morningSummary) { on ->
+            a.updateTravel { it.copy(morningSummary = on) }
+        }
+        if (settings.morningSummary) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Summary time", Modifier.weight(1f))
+                OutlinedButton(onClick = {
+                    val t = settings.morningTime
+                    TimePickerDialog(ctx, { _, h, m -> a.updateTravel { it.copy(morningTime = LocalTime.of(h, m)) } }, t.hour, t.minute, true).show()
+                }) { Text(settings.morningTime.format(DateTimeFormatter.ofPattern("HH:mm"))) }
+            }
+        }
+        ToggleRow("Weekly review", "A look back at the week, and a nudge to plan the next.", settings.weeklyReview) { on ->
+            a.updateTravel { it.copy(weeklyReview = on) }
+        }
+        if (settings.weeklyReview) {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                java.time.DayOfWeek.entries.forEach { d ->
+                    FilterChip(
+                        selected = settings.reviewDay == d,
+                        onClick = { a.updateTravel { it.copy(reviewDay = d) } },
+                        label = { Text(d.name.take(3).lowercase().replaceFirstChar(Char::uppercase)) },
+                    )
+                }
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        val t = settings.reviewTime
+                        TimePickerDialog(ctx, { _, h, m -> a.updateTravel { it.copy(reviewTime = LocalTime.of(h, m)) } }, t.hour, t.minute, true).show()
+                    },
+                    label = { Text("at " + settings.reviewTime.format(DateTimeFormatter.ofPattern("HH:mm"))) },
+                )
+            }
+            TextButton(onClick = a.openReview) { Text("Open this week's review") }
+        }
+        OutlinedButton(onClick = a.testNotification, modifier = Modifier.padding(top = 12.dp)) { Text("Send test notification") }
+    }
 
-        item {
-            SectionHeader("Scheduled")
-            if (alertState.upcoming.isEmpty()) {
-                Text(
-                    "Nothing scheduled. Leave-now alerts need events with a location, a travel time, and a leave time still ahead.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+    item {
+        SectionHeader("Scheduled")
+        if (alertState.upcoming.isEmpty()) {
+            Text(
+                "Nothing scheduled. Leave-now alerts need events with a location, a travel time, and a leave time still ahead.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        items(alertState.upcoming, key = { "al-${it.key}" }) { al ->
-            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-                Text(
-                    al.at.format(DateTimeFormatter.ofPattern("EEE HH:mm")),
-                    Modifier.width(84.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(al.title, style = MaterialTheme.typography.bodyMedium)
-            }
+    }
+    items(alertState.upcoming, key = { "al-${it.key}" }) { al ->
+        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+            Text(
+                al.at.format(DateTimeFormatter.ofPattern("EEE HH:mm")),
+                Modifier.width(84.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(al.title, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -423,7 +483,7 @@ private val hhmm = DateTimeFormatter.ofPattern("HH:mm")
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun PlanningTab(settings: SettingsState, tags: List<Tag>, a: SettingsActions) {
+private fun PlanningTab(settings: SettingsState, tags: List<Tag>, alertState: AlertState, a: SettingsActions) {
     val ctx = LocalContext.current
     fun pickTime(t: LocalTime, set: (LocalTime) -> Unit) =
         TimePickerDialog(ctx, { _, h, m -> set(LocalTime.of(h, m)) }, t.hour, t.minute, true).show()
@@ -533,6 +593,7 @@ private fun PlanningTab(settings: SettingsState, tags: List<Tag>, a: SettingsAct
                 }
             }
         }
+        alertItems(settings, alertState, a)
     }
 }
 
@@ -603,13 +664,13 @@ private fun BackupTab(a: SettingsActions) {
         item {
             SectionHeader("Backup file")
             Text(
-                "Saves every to-do, long-term task, routine, tag and setting to one file. Pick Google Drive in the file picker to keep it off the phone.",
+                "Saves every to-do, goal, repeating to-do, tag and setting to one file. Pick Google Drive in the file picker to keep it off the phone.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Button(onClick = a.exportBackup, modifier = Modifier.padding(top = 8.dp)) { Text("Save a backup") }
             SectionHeader("Restore")
             Text(
-                "Replaces everything with a backup's contents (you can undo straight after). Calendar choices on this phone are kept; routines get their calendar events back.",
+                "Replaces everything with a backup's contents (you can undo straight after). Calendar choices on this phone are kept; repeating to-dos get their calendar events back.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             OutlinedButton(onClick = a.importBackup, modifier = Modifier.padding(top = 8.dp)) { Text("Restore from a file") }
@@ -710,8 +771,8 @@ private fun SyntaxTab() {
             listOf(
                 "The first word is always part of the title, so “Sun cream” stays a title.",
                 "A weekday means the next one, including today.",
-                "Routines use the same box: add a time (18:00) to put them in Google Calendar.",
-                "For start/end dates and weekly/monthly breakdowns, use New task on the Tasks tab.",
+                "Repeats: daily, weekdays, every mon,wed, every 2 weeks tue, every 3 days, monthly. With a time (18:00) they also go into Google Calendar.",
+                "For start/end dates and weekly/monthly breakdowns, tap ✎ in the Goals tab's box.",
             ).forEach {
                 Text("• $it", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(vertical = 3.dp))
             }

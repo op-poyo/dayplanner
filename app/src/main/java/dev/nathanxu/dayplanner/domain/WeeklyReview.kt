@@ -20,7 +20,11 @@ data class ReviewTask(
     val isLog: Boolean = false,
 )
 
-data class RoutineInput(val id: Long, val title: String, val daysMask: Int, val active: Boolean)
+data class RoutineInput(
+    val id: Long, val title: String, val daysMask: Int, val active: Boolean,
+    /** Its repeat rule; null = weekly on [daysMask]. */
+    val repeat: Repeat? = null,
+)
 
 data class TagTotal(val tag: String, val done: Int, val minutes: Int)
 data class RoutineScore(val id: Long, val title: String, val done: Int, val expected: Int)
@@ -68,7 +72,7 @@ object WeeklyReview {
 
         val routineScores = routines.filter { it.active }.mapNotNull { r ->
             val expected = (0..6).map { weekStart.plusDays(it.toLong()) }
-                .count { !it.isAfter(upTo) && Days.has(r.daysMask, it.dayOfWeek) }
+                .count { !it.isAfter(upTo) && (r.repeat ?: Repeat.weekly(r.daysMask)).occursOn(it) }
             if (expected == 0) return@mapNotNull null
             val done = tasks.count { it.routineId == r.id && it.done && inWeek(it.date) && !it.date!!.isAfter(upTo) }
             RoutineScore(r.id, r.title, done.coerceAtMost(expected), expected)

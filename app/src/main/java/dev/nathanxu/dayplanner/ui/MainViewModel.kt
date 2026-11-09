@@ -388,6 +388,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- search ----------
+
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+    private val _searchResults = MutableStateFlow<Repository.SearchResults?>(null)
+    /** null = nothing typed yet. */
+    val searchResults: StateFlow<Repository.SearchResults?> = _searchResults.asStateFlow()
+    private var searchJob: kotlinx.coroutines.Job? = null
+
+    fun setSearch(q: String) {
+        _searchQuery.value = q
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            if (q.isBlank()) { _searchResults.value = null; return@launch }
+            kotlinx.coroutines.delay(200) // wait for a pause in typing
+            _searchResults.value = runCatching { repo.search(q) }.getOrNull()
+        }
+    }
+
+    fun rerunSearch() { if (_searchQuery.value.isNotBlank()) setSearch(_searchQuery.value) }
+
     // ---------- weekly review ----------
 
     private val _review = MutableStateFlow<WeekSummary?>(null)
@@ -511,6 +532,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _messages.emit(repo.quickAdd(text, _today.value))
     }
 
+    /** Ticks a to-do that then leaves its list (Upcoming), so offer Undo. */
+    fun tickWithUndo(task: Task) = viewModelScope.launch {
+        repo.setDone(task.id, true)
+        offerUndo("Ticked “${task.title}”") { repo.setDone(task.id, false) }
+    }
+
+    fun dismissSwipeTip() {
+        repo.settings.update { it.copy(swipeTipSeen = true) }
+    }
+
+    fun setSort(mode: dev.nathanxu.dayplanner.domain.TodoSort) {
+        repo.settings.update { it.copy(todoSort = mode.name) }
+    }
+
     /** Toggles by id from the database, so a stale copy of the row can't undo itself. */
     fun toggle(task: Task) = viewModelScope.launch { repo.toggle(task.id) }
 
@@ -522,8 +557,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun createTask(task: Task) = viewModelScope.launch { _messages.emit(repo.createTask(task)) }
 
     fun delete(task: Task) = viewModelScope.launch {
-        repo.deleteTask(task.id)
-        offerUndo("Deleted “${task.title}”") { repo.restoreTask(task) }
+        val skipped = repo.deleteTask(task.id)
+        offerUndo(if (skipped) "Skipped “${task.title}” for that day" else "Deleted “${task.title}”") { repo.restoreTask(task) }
     }
 
     // ---------- goals ----------
@@ -541,6 +576,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         repo.updateGoal(goal, _today.value)
         _messages.emit("Saved “${goal.title}”")
     }
+    fun finishGoal(goal: Goal) = viewModelScope.launch {
+        repo.finishGoal(goal, _today.value)
+        offerUndo("Finished “${goal.title}”") { repo.updateGoal(goal, _today.value) }
+    }
+
+    fun clearFinished() = viewModelScope.launch {
+        val gone = repo.clearFinished()
+        if (gone.isNotEmpty()) offerUndo("Deleted ${gone.size} finished goal${if (gone.size == 1) "" else "s"}") { repo.restoreGoals(gone) }
+    }
+
     fun deleteGoal(goal: Goal) = viewModelScope.launch {
         repo.deleteGoal(goal)
         offerUndo("Deleted “${goal.title}”") { repo.restoreGoal(goal, _today.value) }
@@ -564,8 +609,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _messages.emit(repo.updateRoutine(r, _today.value))
     }
     /** For the routine editor's live clash warning. */
-    suspend fun clashesFor(mask: Int, time: LocalTime, minutes: Int, routineId: Long?): List<String> =
-        runCatching { repo.routineClashes(mask, time, minutes, routineId) }.getOrDefault(emptyList())
+    suspend fun clashesFor(repeat: dev.nathanxu.dayplanner.domain.Repeat, time: LocalTime, minutes: Int, routineId: Long?): List<String> =
+        runCatching { repo.routineClashes(repeat, time, minutes, routineId) }.getOrDefault(emptyList())
 
     fun setRoutineSync(r: Routine, on: Boolean) = viewModelScope.launch {
         repo.setRoutineSync(r, on)?.let { _messages.emit(it) }

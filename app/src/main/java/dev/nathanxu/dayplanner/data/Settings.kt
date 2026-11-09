@@ -35,7 +35,7 @@ class Settings(context: Context) {
             morningSummary = sp.getBoolean(KEY_MORNING, true),
             morningTime = sp.getInt(KEY_MORNING_AT, 7 * 60 + 30).let { LocalTime.of(it / 60, it % 60) },
             remindTodos = sp.getBoolean(KEY_REMIND, true),
-            reminderLead = sp.getInt(KEY_REMIND_LEAD, 0),
+            reminderLead = sp.getInt(KEY_DEFAULT_REMINDER, -1).takeIf { it >= 0 },
             workStart = time(sp.getInt(KEY_WORK_START, 8 * 60)),
             workEnd = time(sp.getInt(KEY_WORK_END, 22 * 60)),
             breakMinutes = sp.getInt(KEY_BREAK, 10),
@@ -46,6 +46,8 @@ class Settings(context: Context) {
             reviewDay = runCatching { DayOfWeek.valueOf(sp.getString(KEY_REVIEW_DAY, "SUNDAY")!!) }.getOrDefault(DayOfWeek.SUNDAY),
             reviewTime = time(sp.getInt(KEY_REVIEW_AT, 18 * 60)),
             onboarded = sp.getBoolean(KEY_ONBOARDED, false),
+            todoSort = sp.getString(KEY_SORT, "DATE") ?: "DATE",
+            swipeTipSeen = sp.getBoolean(KEY_SWIPE_TIP, false),
         )
     }
 
@@ -89,7 +91,7 @@ class Settings(context: Context) {
             putBoolean(KEY_MORNING, next.morningSummary)
             putInt(KEY_MORNING_AT, next.morningTime.hour * 60 + next.morningTime.minute)
             putBoolean(KEY_REMIND, next.remindTodos)
-            putInt(KEY_REMIND_LEAD, next.reminderLead)
+            putInt(KEY_DEFAULT_REMINDER, next.reminderLead ?: -1)
             putInt(KEY_WORK_START, min(next.workStart))
             putInt(KEY_WORK_END, min(next.workEnd))
             putInt(KEY_BREAK, next.breakMinutes)
@@ -100,6 +102,8 @@ class Settings(context: Context) {
             putString(KEY_REVIEW_DAY, next.reviewDay.name)
             putInt(KEY_REVIEW_AT, min(next.reviewTime))
             putBoolean(KEY_ONBOARDED, next.onboarded)
+            putString(KEY_SORT, next.todoSort)
+            putBoolean(KEY_SWIPE_TIP, next.swipeTipSeen)
         }.apply()
         _state.value = next
     }
@@ -116,7 +120,8 @@ class Settings(context: Context) {
         const val KEY_MORNING = "morning_summary"
         const val KEY_MORNING_AT = "morning_at"
         const val KEY_REMIND = "remind_todos"
-        const val KEY_REMIND_LEAD = "remind_lead"
+        // v1.8.1: new key, so the old "at the time" default becomes off.
+        const val KEY_DEFAULT_REMINDER = "default_reminder"
         const val KEY_WORK_START = "work_start"
         const val KEY_WORK_END = "work_end"
         const val KEY_BREAK = "break_minutes"
@@ -127,5 +132,7 @@ class Settings(context: Context) {
         const val KEY_REVIEW_DAY = "review_day"
         const val KEY_REVIEW_AT = "review_at"
         const val KEY_ONBOARDED = "onboarded"
+        const val KEY_SORT = "todo_sort"
+        const val KEY_SWIPE_TIP = "swipe_tip_seen"
     }
 }

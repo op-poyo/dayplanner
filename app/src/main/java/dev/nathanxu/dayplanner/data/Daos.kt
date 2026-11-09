@@ -9,10 +9,10 @@ import androidx.room.Update
 import kotlinx.coroutines.flow.Flow
 import java.time.LocalDate
 
-/** "+1" logs are bookkeeping for goal progress, never shown as tasks. */
-private const val NOT_LOG = "(genKey IS NULL OR genKey NOT LIKE 'l:%')"
+/** +1 logs and skipped generated to-dos are bookkeeping, never shown as to-dos. */
+private const val NOT_LOG = "((genKey IS NULL OR genKey NOT LIKE 'l:%') AND (skipped IS NULL OR skipped = 0))"
 private const val TODAY_FILTER = """
-    $NOT_LOG AND ((date = :today) OR (date < :today AND done = 0) OR (date IS NULL AND done = 0))
+    $NOT_LOG AND ((date = :today) OR (date < :today AND done = 0))
 """
 private const val TODAY_ORDER = """
     ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date ASC,
@@ -22,14 +22,14 @@ private const val TODAY_ORDER = """
 
 @Dao
 interface TaskDao {
-    /** Today's tasks, overdue undone tasks, and undated undone tasks. */
+    /** Today's to-dos and overdue undone ones (someday ones live in the To-dos tab). */
     @Query("SELECT * FROM tasks WHERE $TODAY_FILTER $TODAY_ORDER")
     fun observeToday(today: LocalDate): Flow<List<Task>>
 
     @Query("SELECT * FROM tasks WHERE $TODAY_FILTER $TODAY_ORDER")
     suspend fun today(today: LocalDate): List<Task>
 
-    @Query("SELECT * FROM tasks WHERE date > :today AND done = 0 ORDER BY date ASC, id ASC")
+    @Query("SELECT * FROM tasks WHERE $NOT_LOG AND date > :today AND done = 0 ORDER BY date ASC, id ASC")
     fun observeUpcoming(today: LocalDate): Flow<List<Task>>
 
     /** Tasks you typed against a goal (its steps) — excludes daily splits and +1 logs. */
@@ -64,6 +64,10 @@ interface TaskDao {
     )
     suspend fun timedOpenBetween(from: LocalDate, toExclusive: LocalDate): List<Task>
 
+    /** Open to-dos with an exact-time reminder in [from, toExclusive). */
+    @Query("SELECT * FROM tasks WHERE $NOT_LOG AND done = 0 AND remindAt >= :from AND remindAt < :toExclusive")
+    suspend fun remindAtBetween(from: java.time.LocalDateTime, toExclusive: java.time.LocalDateTime): List<Task>
+
     /** For the weekly review: dated in [from, to), ticked in [fromMs, toMs), or open with a deadline before [to]. */
     @Query(
         """
@@ -74,9 +78,22 @@ interface TaskDao {
     suspend fun forReview(from: LocalDate, to: LocalDate, fromMs: Long, toMs: Long): List<Task>
 
     @Query("SELECT * FROM tasks") suspend fun all(): List<Task>
+
+    /** Search: to-dos whose title or place contains [q], or with one of [tags] (open first). */
+    @Query(
+        """
+        SELECT * FROM tasks WHERE $NOT_LOG AND (title LIKE '%' || :q || '%' OR place LIKE '%' || :q || '%' OR category IN (:tags))
+        ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date DESC, id DESC LIMIT 200
+        """
+    )
+    suspend fun search(q: String, tags: List<String>): List<Task>
     @Query("SELECT COUNT(*) FROM tasks") suspend fun count(): Int
     @Query("DELETE FROM tasks") suspend fun deleteAll()
     @Insert suspend fun insertAll(tasks: List<Task>)
+
+    /** Open planned to-dos split into sittings, for a reminder per sitting. */
+    @Query("SELECT * FROM tasks WHERE $NOT_LOG AND done = 0 AND sittings IS NOT NULL")
+    suspend fun withSittings(): List<Task>
 
     /** Every open to-do (not +1 logs), for the planner. */
     @Query("SELECT * FROM tasks WHERE $NOT_LOG AND done = 0")

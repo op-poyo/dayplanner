@@ -43,6 +43,8 @@ fun QuickAddBar(
     focusRequester: FocusRequester = remember { FocusRequester() },
     /** Opens the full form, prefilled from whatever has been typed so far. */
     onExpand: ((String) -> Unit)? = null,
+    /** Shows the quick-add syntax. */
+    onHelp: (() -> Unit)? = null,
 ) {
     var text by rememberSaveable { mutableStateOf("") }
     val submit = {
@@ -62,6 +64,9 @@ fun QuickAddBar(
         keyboardActions = KeyboardActions(onDone = { submit() }),
         trailingIcon = {
             Row {
+                if (onHelp != null) {
+                    IconButton(onClick = onHelp) { Text("?", fontWeight = FontWeight.Bold) }
+                }
                 if (onExpand != null) {
                     IconButton(onClick = {
                         onExpand(text.trim())
@@ -101,14 +106,16 @@ fun SwipeRow(
     val delete by androidx.compose.runtime.rememberUpdatedState(onDelete)
     val state = androidx.compose.material3.rememberSwipeToDismissBoxState()
     // Act once the swipe has settled (not inside confirmValueChange, which can run several times
-    // per gesture), then spring the row back.
+    // per gesture). Reset the swipe *before* acting: deleting removes the row at once, and the
+    // list saves its swipe state by key, so a "swiped" state saved then would come back with
+    // Undo and delete the row again.
     androidx.compose.runtime.LaunchedEffect(state.currentValue) {
         when (state.currentValue) {
             androidx.compose.material3.SwipeToDismissBoxValue.StartToEnd -> {
-                haptic(); toggle(); state.reset()
+                haptic(); state.snapTo(androidx.compose.material3.SwipeToDismissBoxValue.Settled); toggle()
             }
             androidx.compose.material3.SwipeToDismissBoxValue.EndToStart -> {
-                haptic(); delete(); state.reset()
+                haptic(); state.snapTo(androidx.compose.material3.SwipeToDismissBoxValue.Settled); delete()
             }
             androidx.compose.material3.SwipeToDismissBoxValue.Settled -> Unit
         }
@@ -136,6 +143,28 @@ fun SwipeRow(
         Box(Modifier.background(MaterialTheme.colorScheme.surface)) { content() }
     }
 }
+
+/** "Sort: Date ▾" with a menu of [TodoSort] modes. */
+@Composable
+fun SortMenu(mode: dev.nathanxu.dayplanner.domain.TodoSort, onChange: (dev.nathanxu.dayplanner.domain.TodoSort) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        androidx.compose.material3.TextButton(onClick = { open = true }) { Text("Sort: ${mode.label} ▾") }
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            dev.nathanxu.dayplanner.domain.TodoSort.entries.forEach { m ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text(m.label + if (m == mode) "  ✓" else "") },
+                    onClick = { open = false; onChange(m) },
+                )
+            }
+        }
+    }
+}
+
+/** Sorting fields for a to-do; [tagName] null for the Other tag. */
+fun sortFields(t: dev.nathanxu.dayplanner.data.Task, tagName: String?) = dev.nathanxu.dayplanner.domain.TodoSort.Fields(
+    t.id, t.date, t.time, dev.nathanxu.dayplanner.domain.Priority.of(t.priority), t.deadline, tagName,
+)
 
 /** A bold "!" before high-priority titles; nothing otherwise. */
 @Composable

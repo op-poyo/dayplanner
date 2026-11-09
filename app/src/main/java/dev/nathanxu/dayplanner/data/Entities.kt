@@ -6,8 +6,11 @@ import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import dev.nathanxu.dayplanner.domain.Cadence
 import dev.nathanxu.dayplanner.domain.Period
+import dev.nathanxu.dayplanner.domain.Repeat
 import dev.nathanxu.dayplanner.domain.Tags
 import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.time.LocalTime
 
 @Entity(
@@ -27,8 +30,10 @@ data class Task(
     val routineId: Long? = null,
     /** How much this task counts towards its goal when done (daily splits can be ×2, ×3…). */
     val units: Int = 1,
-    /** Minutes before [time] to remind: null = the default from Settings, −1 = no reminder. */
+    /** Minutes before [time] to remind. null or −1 = no reminder (new to-dos start from the Settings default). */
     val remindBefore: Int? = null,
+    /** Remind at exactly this moment instead (works without a [time]). */
+    val remindAt: LocalDateTime? = null,
     /** Priority name (HIGH/LOW); null = normal. See [dev.nathanxu.dayplanner.domain.Priority]. */
     val priority: String? = null,
     /** Must be done by (separate from [date], the day you plan to do it). */
@@ -40,6 +45,13 @@ data class Task(
      * blocks ("" if they weren't added to the calendar). null = you set the time yourself.
      */
     val plannedEvents: String? = null,
+    /** All sittings of a split planned to-do ([dev.nathanxu.dayplanner.domain.Sittings]); null if one block. */
+    val sittings: String? = null,
+    /**
+     * A routine or daily-split to-do you deleted: kept (hidden) so it isn't made again that day.
+     * null/false = normal.
+     */
+    val skipped: Boolean? = null,
     /**
      * Set for app-generated tasks so they're created once:
      * "r:<routineId>:<epochDay>" routine instance, "g:<goalId>:<epochDay>" goal daily split,
@@ -102,8 +114,21 @@ data class Routine(
     val syncToCalendar: Boolean = true,
     /** CalendarContract event id once created. */
     val calendarEventId: Long? = null,
-    /** Remind at the routine's time. null = yes (rows from before v1.6.2). */
+    /** Remind at the routine's time. Only true reminds (null = off, as for older rows). */
     val remind: Boolean? = null,
+    /** Repeat rule (see [Repeat]); all null = weekly on [daysMask], as before v1.9. */
+    val repeatUnit: String? = null,
+    val repeatEvery: Int? = null,
+    val repeatFrom: LocalDate? = null,
+)
+
+val Routine.repeat: Repeat get() = Repeat.of(repeatUnit, repeatEvery, daysMask, repeatFrom)
+
+/** Copy with [r]'s rule. */
+fun Routine.withRepeat(r: Repeat): Routine = copy(
+    daysMask = r.daysMask, repeatFrom = r.from,
+    repeatUnit = if (r == Repeat.weekly(r.daysMask)) null else r.unit.name,
+    repeatEvery = if (r == Repeat.weekly(r.daysMask)) null else r.every,
 )
 
 @Entity(tableName = "travel_cache")
@@ -131,4 +156,7 @@ class Converters {
     @TypeConverter fun longToDate(v: Long?): LocalDate? = v?.let(LocalDate::ofEpochDay)
     @TypeConverter fun timeToInt(t: LocalTime?): Int? = t?.let { it.hour * 60 + it.minute }
     @TypeConverter fun intToTime(v: Int?): LocalTime? = v?.let { LocalTime.of(it / 60, it % 60) }
+    // Wall-clock time (as if UTC), so a reminder stays at 08:00 even if the phone's time zone changes.
+    @TypeConverter fun dateTimeToLong(t: LocalDateTime?): Long? = t?.toEpochSecond(ZoneOffset.UTC)
+    @TypeConverter fun longToDateTime(v: Long?): LocalDateTime? = v?.let { LocalDateTime.ofEpochSecond(it, 0, ZoneOffset.UTC) }
 }

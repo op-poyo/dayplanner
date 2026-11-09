@@ -26,8 +26,8 @@ data class SettingsState(
     val morningTime: LocalTime = LocalTime.of(7, 30),
     /** Notify for to-dos that have a time. */
     val remindTodos: Boolean = true,
-    /** Default minutes before a to-do's time (0 = at the time). */
-    val reminderLead: Int = 0,
+    /** Reminder new timed to-dos start with: minutes before (0 = at the time), null = off. */
+    val reminderLead: Int? = null,
     /** Planner: when your day starts and ends. */
     val workStart: LocalTime = LocalTime.of(8, 0),
     val workEnd: LocalTime = LocalTime.of(22, 0),
@@ -43,6 +43,10 @@ data class SettingsState(
     val weeklyReview: Boolean = true,
     val reviewDay: DayOfWeek = DayOfWeek.SUNDAY,
     val reviewTime: LocalTime = LocalTime.of(18, 0),
+    /** How to-do lists are ordered (a [dev.nathanxu.dayplanner.domain.TodoSort] name). */
+    val todoSort: String = "DATE",
+    /** Dismissed the "swipe to tick / delete" tip. */
+    val swipeTipSeen: Boolean = false,
     /** Finished (or skipped) the first-launch setup. */
     val onboarded: Boolean = false,
 ) {

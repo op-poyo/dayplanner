@@ -74,7 +74,10 @@ class AlertReceiver : BroadcastReceiver() {
                         Notifier.post(app, REVIEW_ID, Notifier.CH_SUMMARY, "Weekly review", body, open = Notifier.OPEN_REVIEW)
                         app.repository.scheduleAlerts()
                     }
-                    else -> app.repository.scheduleAlerts() // refresh, boot, update, permission change
+                    else -> { // midnight refresh, boot, update, permission change
+                        app.repository.ensureFor(java.time.LocalDate.now())
+                        app.repository.flushChanges() // widget + alerts, now
+                    }
                 }
             } catch (e: Exception) {
                 Log.w("AlertReceiver", "Failed handling ${intent.action}", e)

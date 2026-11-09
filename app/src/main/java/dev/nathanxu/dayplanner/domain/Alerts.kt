@@ -20,14 +20,18 @@ data class Alert(
     enum class Kind { LEAVE, MORNING, TODO }
 }
 
-/** A timed to-do that may need a reminder. [leadMinutes] < 0 means "no reminder". */
+/**
+ * A to-do that may need a reminder: [leadMinutes] before its [time] (< 0 = none), or at [at]
+ * exactly (which works for to-dos without a time too, and wins over [leadMinutes]).
+ */
 data class ReminderInput(
     val taskId: Long,
     val title: String,
     val date: LocalDate,
-    val time: LocalTime,
+    val time: LocalTime?,
     val leadMinutes: Int,
     val minutes: Int? = null,
+    val at: LocalDateTime? = null,
 )
 
 object AlertPlanner {
@@ -65,13 +69,16 @@ object AlertPlanner {
      */
     fun todoReminders(items: List<ReminderInput>, now: LocalDateTime, horizonHours: Long = 36): List<Alert> =
         items.mapNotNull { r ->
-            if (r.leadMinutes < 0) return@mapNotNull null
-            val due = r.date.atTime(r.time)
-            val at = due.minusMinutes(r.leadMinutes.toLong())
-            if (!at.isAfter(now) || at.isAfter(now.plusHours(horizonHours))) return@mapNotNull null
             val length = r.minutes?.let { " · ${formatLength(it)}" } ?: ""
-            val body = if (r.leadMinutes == 0) "Now$length" else "In ${formatLength(r.leadMinutes)} · at ${r.time.format(hm)}$length"
-            Alert("todo:${r.taskId}:${r.date}T${r.time}", at, r.title, body, Alert.Kind.TODO, r.taskId)
+            val (at, body) = when {
+                r.at != null -> r.at to (r.time?.let { "Starts at ${it.format(hm)}$length" } ?: "Reminder$length")
+                r.time == null || r.leadMinutes < 0 -> return@mapNotNull null
+                else -> r.date.atTime(r.time).minusMinutes(r.leadMinutes.toLong()) to
+                    (if (r.leadMinutes == 0) "Now$length" else "In ${formatLength(r.leadMinutes)} · at ${r.time.format(hm)}$length")
+            }
+            if (!at.isAfter(now) || at.isAfter(now.plusHours(horizonHours))) return@mapNotNull null
+            // The key changes whenever the reminder moves, so a re-plan replaces it cleanly.
+            Alert("todo:${r.taskId}:$at", at, r.title, body, Alert.Kind.TODO, r.taskId)
         }
 
     private fun formatLength(m: Int): String = when {

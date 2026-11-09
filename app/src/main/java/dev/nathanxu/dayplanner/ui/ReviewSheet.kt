@@ -106,7 +106,7 @@ fun ReviewSheet(
             }
 
             if (s.routines.isNotEmpty()) {
-                SectionHeader("Routines")
+                SectionHeader("Repeating")
                 s.routines.forEach { r ->
                     Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                         Row {
@@ -123,7 +123,7 @@ fun ReviewSheet(
 
             val active = goals.filter { !it.goal.archived }
             if (active.isNotEmpty()) {
-                SectionHeader("Long-term")
+                SectionHeader("Goals")
                 active.take(6).forEach { gp ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 3.dp)) {
                         Text(gp.goal.title, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)

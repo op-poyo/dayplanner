@@ -53,6 +53,7 @@ import dev.nathanxu.dayplanner.data.end
 import dev.nathanxu.dayplanner.data.isOngoing
 import dev.nathanxu.dayplanner.data.start
 import dev.nathanxu.dayplanner.domain.Labels
+import dev.nathanxu.dayplanner.domain.TodoSort
 import dev.nathanxu.dayplanner.domain.Cadence
 import dev.nathanxu.dayplanner.domain.GoalMode
 import dev.nathanxu.dayplanner.domain.GoalStatus
@@ -78,6 +79,7 @@ class GoalActions(
     val onEdit: (Goal) -> Unit,
     val onEditStep: (Task) -> Unit,
     val onExtend: (Goal, LocalDate) -> Unit,
+    val onClearFinished: () -> Unit = {},
 )
 
 class TodoActions(
@@ -86,39 +88,85 @@ class TodoActions(
     val onDelete: (Task) -> Unit,
 )
 
-/** Tasks tab: long-term tasks, or every one-off to-do in one place. */
+/** Goals tab: goals now, coming up, and finished. Add them with the box at the bottom (or ✎). */
 @Composable
 fun GoalsScreen(
     today: LocalDate,
-    segment: Int,
-    onSegment: (Int) -> Unit,
     goals: List<GoalProgress>,
     finished: List<GoalProgress>,
-    todos: List<Task>,
     tags: List<Tag>,
-    onQuickAdd: (String) -> Unit,
-    onExpandPlan: (String) -> Unit,
-    onExpandTodo: (String) -> Unit,
+    onNewGoal: () -> Unit,
+    onReview: () -> Unit,
     actions: GoalActions,
-    todoActions: TodoActions,
     contentPadding: PaddingValues,
 ) {
     LazyColumn(
         contentPadding = PaddingValues(
             start = 16.dp, end = 16.dp,
             top = contentPadding.calculateTopPadding() + 8.dp,
-            bottom = contentPadding.calculateBottomPadding() + 88.dp, // room for the FAB
+            bottom = contentPadding.calculateBottomPadding() + 16.dp,
         ),
     ) {
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = segment == 0, onClick = { onSegment(0) }, label = { Text("Long-term") })
-                FilterChip(selected = segment == 1, onClick = { onSegment(1) }, label = { Text("All to-dos") })
+                OutlinedButton(onClick = onNewGoal) { Text("New goal") }
+                TextButton(onClick = onReview) { Text("Weekly review") }
             }
-            Spacer(Modifier.height(8.dp))
         }
-        if (segment == 0) longTerm(today, goals, finished, tags, onQuickAdd, onExpandPlan, actions)
-        else allTodos(today, todos, tags, onQuickAdd, onExpandTodo, todoActions)
+        longTerm(today, goals, finished, tags, actions)
+    }
+}
+
+/** To-dos tab: every one-off to-do, or the repeating ones. */
+@Composable
+fun TodosScreen(
+    today: LocalDate,
+    segment: Int,
+    onSegment: (Int) -> Unit,
+    todos: List<Task>,
+    tags: List<Tag>,
+    todoActions: TodoActions,
+    contentPadding: PaddingValues,
+    sort: TodoSort,
+    onSort: (TodoSort) -> Unit,
+    /** The Repeating list (shown for segment 1), given the chips to put at its top. */
+    repeating: @Composable (header: @Composable () -> Unit) -> Unit,
+    showSwipeTip: Boolean = false,
+    onDismissSwipeTip: () -> Unit = {},
+) {
+    val chips: @Composable () -> Unit = {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = segment == 0, onClick = { onSegment(0) }, label = { Text("All") })
+            FilterChip(selected = segment == 1, onClick = { onSegment(1) }, label = { Text("Repeating") })
+        }
+    }
+    if (segment == 1) {
+        repeating(chips)
+        return
+    }
+    LazyColumn(
+        contentPadding = PaddingValues(
+            start = 16.dp, end = 16.dp,
+            top = contentPadding.calculateTopPadding() + 8.dp,
+            bottom = contentPadding.calculateBottomPadding() + 16.dp,
+        ),
+    ) {
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.weight(1f)) { chips() }
+                SortMenu(sort, onSort)
+            }
+            if (showSwipeTip) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Tip: swipe right to tick, left to delete.", Modifier.weight(1f),
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = onDismissSwipeTip) { Text("Got it") }
+                }
+            }
+        }
+        allTodos(today, todos, tags, todoActions, sort)
     }
 }
 
@@ -127,24 +175,13 @@ private fun androidx.compose.foundation.lazy.LazyListScope.longTerm(
     goals: List<GoalProgress>,
     finished: List<GoalProgress>,
     tags: List<Tag>,
-    onQuickAdd: (String) -> Unit,
-    onExpandPlan: (String) -> Unit,
     actions: GoalActions,
 ) {
     val now = goals.filter { !it.goal.start.isAfter(today) }
     val later = goals.filter { it.goal.start.isAfter(today) }.sortedBy { it.goal.start }
-    item {
-        QuickAddBar(placeholder = "LeetCode x5 @week !r", onSubmit = onQuickAdd, onExpand = onExpandPlan)
-        Text(
-            "Type it, or tap ✎ (or New task) for the full form with dates and breakdowns.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp, start = 4.dp),
-        )
-    }
     item(key = "now") { SectionHeader("Now" + overallPercent(now.map { it.status })) }
     if (now.isEmpty()) item(key = "now-empty") {
-        EmptyNote("Nothing on yet. A long-term task turns something big — “15 LeetCode problems in 3 weeks” — into a small to-do each day.")
+        EmptyNote("No goals yet. A goal turns something big (“15 LeetCode problems in 3 weeks”, “gym 3× a week”) into a small to-do each day. Type one below, e.g. “LeetCode x15 @month”.")
     }
     items(now, key = { it.goal.id }) { gp ->
         GoalCard(gp, today, Tags.find(gp.goal.category, tags), actions)
@@ -158,7 +195,12 @@ private fun androidx.compose.foundation.lazy.LazyListScope.longTerm(
         }
     }
     if (finished.isNotEmpty()) {
-        item(key = "finished") { SectionHeader("Finished") }
+        item(key = "finished") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionHeader("Finished · ${finished.size}", Modifier.weight(1f))
+                TextButton(onClick = actions.onClearFinished) { Text("Clear all") }
+            }
+        }
         items(finished, key = { "f${it.goal.id}" }) { gp ->
             FinishedRow(gp, Tags.find(gp.goal.category, tags), actions)
         }
@@ -169,23 +211,14 @@ private fun androidx.compose.foundation.lazy.LazyListScope.allTodos(
     today: LocalDate,
     todos: List<Task>,
     tags: List<Tag>,
-    onQuickAdd: (String) -> Unit,
-    onExpandTodo: (String) -> Unit,
     a: TodoActions,
+    sort: TodoSort,
 ) {
     val open = todos.filter { !it.done }
+    val tagName = { t: Task -> Tags.find(t.category, tags).takeIf { it.key != Tags.OTHER }?.name }
     val done = todos.filter { it.done }
-    item {
-        QuickAddBar(placeholder = "Problem sheet fri #study 1h", onSubmit = onQuickAdd, onExpand = onExpandTodo)
-        Text(
-            "Swipe right to tick, left to delete.",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 6.dp, start = 4.dp),
-        )
-    }
     if (open.isEmpty()) item { EmptyNote("All clear. Nothing waiting — enjoy it.") }
-    TodoGroups.group(open, today) { it.date }.forEach { (label, list) ->
+    TodoSort.sections(open, sort, today) { sortFields(it, tagName(it)) }.forEach { (label, list) ->
         item(key = "g-$label") { SectionHeader("$label · ${list.size}") }
         items(list, key = { "t${it.id}" }) { t -> TodoLine(t, Tags.find(t.category, tags), a, Modifier.animateItem()) }
     }
@@ -270,6 +303,7 @@ private fun FinishedRow(gp: GoalProgress, tag: Tag, a: GoalActions) {
                 )
             }
             TextButton(onClick = { extending = !extending }) { Text(if (extending) "Close" else "Extend") }
+            IconButton(onClick = { a.onDelete(gp.goal) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
         }
         if (extending) ExtendChips(gp.goal) { g, d -> extending = false; a.onExtend(g, d) }
     }
@@ -328,7 +362,7 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalAction
                 Column(Modifier.padding(top = 6.dp)) {
                     gp.steps.forEach { step -> StepRow(step, today, { a.onToggleStep(step) }, { a.onEditStep(step) }) }
                     QuickAddBar(
-                        placeholder = "Add step, e.g. Draft intro tue",
+                        placeholder = "Add step, e.g. Draft intro tue 1h by 20/11",
                         onSubmit = { a.onAddStep(g, it) },
                         onExpand = { a.onExpandStep(g, it) },
                         modifier = Modifier.padding(end = 8.dp, top = 4.dp),

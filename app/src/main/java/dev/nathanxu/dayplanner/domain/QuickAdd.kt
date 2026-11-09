@@ -17,6 +17,8 @@ data class TaskDraft(
     val time: LocalTime? = null,
     val priority: Priority = Priority.NORMAL,
     val deadline: LocalDate? = null,
+    /** Set when it repeats ("every mon,wed", "daily"…): it becomes a repeating to-do. */
+    val repeat: Repeat? = null,
 ) : Parsed
 
 data class GoalDraft(
@@ -47,6 +49,7 @@ object QuickAdd {
         minsRx.find(t)?.let { return it.groupValues[1].toInt() }
         return null
     }
+    private const val WEEKENDS = 0b1100000
     private val targetRx = Regex("""^x(\d{1,3})$""")
     private val time24 = Regex("""^([01]?\d|2[0-3])[:.]([0-5]\d)$""")
     private val time12 = Regex("""^(1[0-2]|0?[1-9])(?:[:.]([0-5]\d))?(am|pm)$""")
@@ -117,6 +120,23 @@ object QuickAdd {
         var deadline: LocalDate? = null
         var dateGiven = false
         val title = mutableListOf<String>()
+        // Repeat: unit + every + days; FROM_DAY = "the weekday it starts on" (filled in at the end).
+        var rUnit: Repeat.Unit? = null
+        var rEvery = 1
+        var rMask = 0
+
+        /** Weekdays starting at words[j] ("mon,wed" or "mon wed fri"); returns mask and words used. */
+        fun dayList(j: Int): Pair<Int, Int> {
+            var mask = 0
+            var k = j
+            while (k < words.size) {
+                val parts = words[k].lowercase().split(',').filter { it.isNotEmpty() }
+                if (parts.isEmpty() || parts.any { it !in weekdays }) break
+                parts.forEach { mask = mask or Days.bit(weekdays.getValue(it)) }
+                k++
+            }
+            return mask to (k - j)
+        }
 
         var i = 0
         while (i < words.size) {
@@ -131,6 +151,40 @@ object QuickAdd {
                     deadline = dl
                     i += 2
                     continue
+                }
+            }
+            // Repeats: "daily", "weekdays", "weekly", "monthly", "every mon,wed", "every 2 weeks tue", "every 3 days".
+            if (dateAllowed && rUnit == null) {
+                when (lw) {
+                    "daily", "everyday" -> { rUnit = Repeat.Unit.WEEK; rMask = Days.ALL; i++; continue }
+                    "weekdays" -> { rUnit = Repeat.Unit.WEEK; rMask = Days.WEEKDAYS; i++; continue }
+                    "weekends" -> { rUnit = Repeat.Unit.WEEK; rMask = WEEKENDS; i++; continue }
+                    "weekly" -> { rUnit = Repeat.Unit.WEEK; i++; continue }
+                    "fortnightly" -> { rUnit = Repeat.Unit.WEEK; rEvery = 2; i++; continue }
+                    "monthly" -> { rUnit = Repeat.Unit.MONTH; i++; continue }
+                }
+                if (lw == "every" && next != null) {
+                    val ln = next.lowercase()
+                    val n = ln.toIntOrNull()?.takeIf { it in 1..52 }
+                    val unitWord = words.getOrNull(i + 2)?.lowercase()
+                    val (mask, used) = dayList(i + 1)
+                    when {
+                        ln == "day" -> { rUnit = Repeat.Unit.WEEK; rMask = Days.ALL; i += 2; continue }
+                        ln == "weekday" || ln == "weekdays" -> { rUnit = Repeat.Unit.WEEK; rMask = Days.WEEKDAYS; i += 2; continue }
+                        ln == "week" -> { rUnit = Repeat.Unit.WEEK; i += 2; continue }
+                        ln == "fortnight" -> { rUnit = Repeat.Unit.WEEK; rEvery = 2; i += 2; continue }
+                        ln == "month" -> { rUnit = Repeat.Unit.MONTH; i += 2; continue }
+                        n != null && unitWord in setOf("day", "days") -> { rUnit = Repeat.Unit.DAY; rEvery = n; i += 3; continue }
+                        n != null && unitWord in setOf("month", "months") -> { rUnit = Repeat.Unit.MONTH; rEvery = n; i += 3; continue }
+                        n != null && unitWord in setOf("week", "weeks") -> {
+                            rUnit = Repeat.Unit.WEEK; rEvery = n
+                            val (m, u) = dayList(i + 3)
+                            rMask = m
+                            i += 3 + u
+                            continue
+                        }
+                        mask != 0 -> { rUnit = Repeat.Unit.WEEK; rMask = mask; i += 1 + used; continue }
+                    }
                 }
             }
             if (dateAllowed && (lw == "someday" || parseDate(lw, today) != null)) dateGiven = true
@@ -159,10 +213,15 @@ object QuickAdd {
 
         val t = title.joinToString(" ").trim()
         if (t.isEmpty()) return null
+        val repeat = rUnit?.let { u ->
+            val from = date ?: today
+            val mask = if (rMask != 0) rMask else Days.bit(from.dayOfWeek)
+            if (u == Repeat.Unit.WEEK && rEvery == 1) Repeat.weekly(mask) else Repeat(u, rEvery, mask, from)
+        }
         return if (period != null) {
             GoalDraft(t, period!!, target, recurring, tag)
         } else {
-            TaskDraft(t, date, tag, minutes?.takeIf { it > 0 }, goalHint, time, priority, deadline)
+            TaskDraft(t, date, tag, minutes?.takeIf { it > 0 }, goalHint, time, priority, deadline, repeat)
         }
     }
 }

@@ -80,15 +80,16 @@ class AlertScheduler(private val context: Context) {
         set(LocalDateTime.now().plusMinutes(minutes), pending(key, intent))
     }
 
-    /** Re-plans every day at 04:30 so tomorrow's alerts exist even if the app isn't opened. */
+    /**
+     * Just after midnight every day: makes the new day's to-dos, re-plans alerts and redraws the
+     * widget, so it shows the new day even if the app isn't opened.
+     */
     private fun scheduleDailyRefresh() {
-        val next = LocalDate.now().plusDays(1).atTime(LocalTime.of(4, 30))
+        val next = LocalDate.now().plusDays(1).atTime(LocalTime.of(0, 1))
         val intent = Intent(context, AlertReceiver::class.java)
             .setAction(AlertReceiver.ACTION_REFRESH)
             .setData(uriFor(REFRESH_KEY))
-        runCatching {
-            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis(next), pending(REFRESH_KEY, intent))
-        }.onFailure { Log.w(TAG, "Daily refresh not set", it) }
+        set(next, pending(REFRESH_KEY, intent)) // exact when allowed, so the widget flips at midnight
     }
 
     fun upcoming(now: LocalDateTime = LocalDateTime.now()): List<ScheduledAlert> =

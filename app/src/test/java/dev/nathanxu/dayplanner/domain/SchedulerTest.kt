@@ -186,3 +186,36 @@ class QuickAddV17Test {
         assertEquals("By the river walk", task("By the river walk").title)
     }
 }
+
+class QuickAddRepeatTest {
+    private val mon = java.time.LocalDate.of(2026, 11, 9)
+    private fun task(s: String) = QuickAdd.parse(s, mon) as TaskDraft
+    private fun bits(vararg d: java.time.DayOfWeek) = d.fold(0) { m, x -> m or Days.bit(x) }
+
+    @Test fun weeklyForms() {
+        assertEquals(Repeat.weekly(Days.ALL), task("Stretch daily").repeat)
+        assertEquals(Repeat.weekly(Days.WEEKDAYS), task("Standup 09:30 weekdays").repeat)
+        assertEquals(Repeat.weekly(bits(java.time.DayOfWeek.MONDAY, java.time.DayOfWeek.WEDNESDAY)), task("Gym 18:00 1h every mon,wed").repeat)
+        assertEquals(Repeat.weekly(bits(java.time.DayOfWeek.TUESDAY, java.time.DayOfWeek.FRIDAY)), task("Run every tue fri").repeat)
+        val g = task("Gym 18:00 1h every mon,wed #gym")
+        assertEquals("Gym", g.title); assertEquals(60, g.minutes); assertEquals("gym", g.tag)
+        // "weekly" with no day: the weekday it starts on (today = Monday).
+        assertEquals(Repeat.weekly(bits(java.time.DayOfWeek.MONDAY)), task("Laundry weekly").repeat)
+    }
+
+    @Test fun intervals() {
+        assertEquals(Repeat(Repeat.Unit.DAY, 3, Days.bit(java.time.DayOfWeek.MONDAY), mon), task("Water plants every 3 days").repeat)
+        assertEquals(Repeat(Repeat.Unit.WEEK, 2, bits(java.time.DayOfWeek.TUESDAY), mon), task("Supervision every 2 weeks tue").repeat)
+        assertEquals(Repeat(Repeat.Unit.WEEK, 2, bits(java.time.DayOfWeek.MONDAY), mon), task("Clean fortnightly").repeat)
+        val rent = task("Rent 1/12 monthly")
+        assertEquals(Repeat(Repeat.Unit.MONTH, 1, Days.bit(java.time.DayOfWeek.TUESDAY), java.time.LocalDate.of(2026, 12, 1)), rent.repeat)
+        assertEquals(Repeat.Unit.MONTH, task("Haircut every 2 months").repeat?.unit)
+    }
+
+    @Test fun notARepeat() {
+        assertEquals(null, task("Every little thing").repeat) // first word is title
+        assertEquals("Read every page", task("Read every page").title)
+        assertEquals(null, task("Read every page").repeat)
+        assertEquals(mon.plusDays(4), task("Essay fri").date) // plain weekday is still a date
+    }
+}

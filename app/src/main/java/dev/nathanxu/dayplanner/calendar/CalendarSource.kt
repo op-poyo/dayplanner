@@ -151,21 +151,20 @@ class CalendarSource(private val context: Context) {
         eventsBetween(date, date.plusDays(1), calendarIds)
 
     /**
-     * Inserts a weekly recurring event into [calendarId]. Returns the event id, or throws with a
-     * readable message so the UI can show why it failed.
+     * Inserts a recurring event (RFC 5545 [rrule], first instance on [firstDate]) into
+     * [calendarId]. Returns the event id, or throws with a readable message so the UI can show
+     * why it failed.
      */
     suspend fun createRecurring(
         calendarId: Long,
         title: String,
-        daysMask: Int,
+        rrule: String,
         time: LocalTime,
         minutes: Int,
         firstDate: LocalDate,
     ): Long = withContext(Dispatchers.IO) {
         require(hasWritePermission()) { "No calendar write permission" }
-        require(daysMask != 0) { "No days selected" }
         val zone = ZoneId.systemDefault()
-        val byDay = DayOfWeek.entries.filter { Days.has(daysMask, it) }.joinToString(",") { it.name.take(2) }
         val values = ContentValues().apply {
             put(Events.CALENDAR_ID, calendarId)
             put(Events.TITLE, title)
@@ -173,7 +172,7 @@ class CalendarSource(private val context: Context) {
             put(Events.DTSTART, firstDate.atTime(time).atZone(zone).toInstant().toEpochMilli())
             // Recurring events take DURATION (RFC 5545) instead of DTEND.
             put(Events.DURATION, "P${minutes.coerceAtLeast(5) * 60}S")
-            put(Events.RRULE, "FREQ=WEEKLY;WKST=MO;BYDAY=$byDay")
+            put(Events.RRULE, rrule)
             put(Events.EVENT_TIMEZONE, zone.id)
             put(Events.AVAILABILITY, Events.AVAILABILITY_BUSY)
         }
