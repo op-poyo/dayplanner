@@ -29,7 +29,7 @@ class AlertScheduler(private val context: Context) {
     fun canExact(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || am.canScheduleExactAlarms()
 
     /** Cancels everything set last time, then sets [alerts] plus the morning summary. */
-    fun replaceAll(alerts: List<Alert>, morningAt: LocalDateTime?) {
+    fun replaceAll(alerts: List<Alert>, morningAt: LocalDateTime?, reviewAt: LocalDateTime? = null) {
         stored().forEach { cancel(it.key) }
 
         val scheduled = mutableListOf<ScheduledAlert>()
@@ -40,6 +40,8 @@ class AlertScheduler(private val context: Context) {
                 .putExtra(AlertReceiver.EXTRA_TITLE, a.title)
                 .putExtra(AlertReceiver.EXTRA_BODY, a.body)
                 .putExtra(AlertReceiver.EXTRA_ID, a.key.hashCode())
+                .putExtra(AlertReceiver.EXTRA_KIND, a.kind.name)
+                .apply { a.taskId?.let { putExtra(AlertReceiver.EXTRA_TASK, it) } }
             set(a.at, pending(a.key, intent))
             scheduled += ScheduledAlert(a.key, a.at, a.title)
         }
@@ -50,8 +52,32 @@ class AlertScheduler(private val context: Context) {
             set(it, pending(MORNING_KEY, intent))
             scheduled += ScheduledAlert(MORNING_KEY, it, "Morning summary")
         }
+        reviewAt?.let {
+            val intent = Intent(context, AlertReceiver::class.java)
+                .setAction(AlertReceiver.ACTION_REVIEW)
+                .setData(uriFor(REVIEW_KEY))
+            set(it, pending(REVIEW_KEY, intent))
+            scheduled += ScheduledAlert(REVIEW_KEY, it, "Weekly review")
+        }
         save(scheduled)
         scheduleDailyRefresh()
+    }
+
+    /**
+     * One-off reminder [minutes] from now (Snooze). Not part of the replaceable set, so a re-plan
+     * in the meantime doesn't cancel it.
+     */
+    fun snooze(taskId: Long, title: String, body: String, minutes: Long = 10) {
+        val key = "snooze:$taskId"
+        val intent = Intent(context, AlertReceiver::class.java)
+            .setAction(AlertReceiver.ACTION_ALERT)
+            .setData(uriFor(key))
+            .putExtra(AlertReceiver.EXTRA_TITLE, title)
+            .putExtra(AlertReceiver.EXTRA_BODY, body)
+            .putExtra(AlertReceiver.EXTRA_ID, ("todo:$taskId").hashCode())
+            .putExtra(AlertReceiver.EXTRA_KIND, "TODO")
+            .putExtra(AlertReceiver.EXTRA_TASK, taskId)
+        set(LocalDateTime.now().plusMinutes(minutes), pending(key, intent))
     }
 
     /** Re-plans every day at 04:30 so tomorrow's alerts exist even if the app isn't opened. */
@@ -78,6 +104,7 @@ class AlertScheduler(private val context: Context) {
     private fun cancel(key: String) {
         val action = when (key) {
             MORNING_KEY -> AlertReceiver.ACTION_MORNING
+            REVIEW_KEY -> AlertReceiver.ACTION_REVIEW
             else -> AlertReceiver.ACTION_ALERT
         }
         val intent = Intent(context, AlertReceiver::class.java).setAction(action).setData(uriFor(key))
@@ -117,5 +144,6 @@ class AlertScheduler(private val context: Context) {
         const val KEY_LIST = "scheduled"
         const val MORNING_KEY = "morning"
         const val REFRESH_KEY = "refresh"
+        const val REVIEW_KEY = "review"
     }
 }

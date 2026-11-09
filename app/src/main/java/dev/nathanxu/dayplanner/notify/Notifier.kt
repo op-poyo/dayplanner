@@ -19,6 +19,9 @@ import dev.nathanxu.dayplanner.ui.MainActivity
 object Notifier {
     const val CH_LEAVE = "leave_now"
     const val CH_SUMMARY = "morning_summary"
+    const val CH_TODO = "todo_reminders"
+    const val EXTRA_OPEN = "open"
+    const val OPEN_REVIEW = "review"
 
     fun ensureChannels(context: Context) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
@@ -33,6 +36,11 @@ object Notifier {
                 description = "Your day at a glance"
             }
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CH_TODO, "To-do reminders", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "To-dos that have a time"
+            }
+        )
     }
 
     fun hasPermission(context: Context): Boolean =
@@ -44,12 +52,22 @@ object Notifier {
 
     /** Returns false if notifications are blocked, so callers can say so. */
     @SuppressLint("MissingPermission") // checked by enabled()
-    fun post(context: Context, id: Int, channel: String, title: String, body: String): Boolean {
+    fun post(
+        context: Context,
+        id: Int,
+        channel: String,
+        title: String,
+        body: String,
+        actions: List<NotificationCompat.Action> = emptyList(),
+        /** Screen to open on tap (see [OPEN_REVIEW]); null = the app as it was. */
+        open: String? = null,
+    ): Boolean {
         if (!enabled(context)) return false
         ensureChannels(context)
-        val open = PendingIntent.getActivity(
-            context, 0,
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+        val tap = PendingIntent.getActivity(
+            context, open?.hashCode() ?: 0,
+            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .apply { open?.let { putExtra(EXTRA_OPEN, it) } },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val n = NotificationCompat.Builder(context, channel)
@@ -57,12 +75,15 @@ object Notifier {
             .setContentTitle(title)
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
-            .setContentIntent(open)
+            .setContentIntent(tap)
             .setAutoCancel(true)
-            .setCategory(if (channel == CH_LEAVE) NotificationCompat.CATEGORY_REMINDER else NotificationCompat.CATEGORY_STATUS)
-            .setPriority(if (channel == CH_LEAVE) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(if (channel == CH_SUMMARY) NotificationCompat.CATEGORY_STATUS else NotificationCompat.CATEGORY_REMINDER)
+            .setPriority(if (channel == CH_SUMMARY) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
+            .apply { actions.forEach { addAction(it) } }
             .build()
         NotificationManagerCompat.from(context).notify(id, n)
         return true
     }
+
+    fun cancel(context: Context, id: Int) = NotificationManagerCompat.from(context).cancel(id)
 }

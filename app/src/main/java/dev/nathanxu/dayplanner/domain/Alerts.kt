@@ -5,10 +5,30 @@ import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
-/** A notification to fire at [at]. [key] is stable across reschedules so alarms replace rather than stack. */
-data class Alert(val key: String, val at: LocalDateTime, val title: String, val body: String, val kind: Kind) {
-    enum class Kind { LEAVE, MORNING }
+/**
+ * A notification to fire at [at]. [key] is stable across reschedules so alarms replace rather than
+ * stack. [taskId] is set for to-do reminders so the notification can offer Done / Snooze.
+ */
+data class Alert(
+    val key: String,
+    val at: LocalDateTime,
+    val title: String,
+    val body: String,
+    val kind: Kind,
+    val taskId: Long? = null,
+) {
+    enum class Kind { LEAVE, MORNING, TODO }
 }
+
+/** A timed to-do that may need a reminder. [leadMinutes] < 0 means "no reminder". */
+data class ReminderInput(
+    val taskId: Long,
+    val title: String,
+    val date: LocalDate,
+    val time: LocalTime,
+    val leadMinutes: Int,
+    val minutes: Int? = null,
+)
 
 object AlertPlanner {
     private val hm = DateTimeFormatter.ofPattern("HH:mm")
@@ -36,6 +56,28 @@ object AlertPlanner {
             body = "$minutes min $fromText to ${leg.destination} · starts ${leg.to.start.format(hm)}",
             kind = Alert.Kind.LEAVE,
         )
+    }
+
+    /**
+     * Reminders for timed to-dos within the next [horizonHours]: at the time, or [ReminderInput.leadMinutes]
+     * before. Past ones and "no reminder" are skipped. Keys include date and time, so moving a
+     * to-do replaces its old alarm.
+     */
+    fun todoReminders(items: List<ReminderInput>, now: LocalDateTime, horizonHours: Long = 36): List<Alert> =
+        items.mapNotNull { r ->
+            if (r.leadMinutes < 0) return@mapNotNull null
+            val due = r.date.atTime(r.time)
+            val at = due.minusMinutes(r.leadMinutes.toLong())
+            if (!at.isAfter(now) || at.isAfter(now.plusHours(horizonHours))) return@mapNotNull null
+            val length = r.minutes?.let { " · ${formatLength(it)}" } ?: ""
+            val body = if (r.leadMinutes == 0) "Now$length" else "In ${formatLength(r.leadMinutes)} · at ${r.time.format(hm)}$length"
+            Alert("todo:${r.taskId}:${r.date}T${r.time}", at, r.title, body, Alert.Kind.TODO, r.taskId)
+        }
+
+    private fun formatLength(m: Int): String = when {
+        m < 60 -> "$m min"
+        m % 60 == 0 -> "${m / 60} h"
+        else -> "${m / 60} h ${m % 60} min"
     }
 
     /** When today's morning summary should fire, or null if that time has already passed. */

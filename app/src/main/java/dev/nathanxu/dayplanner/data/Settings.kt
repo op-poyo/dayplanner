@@ -1,31 +1,14 @@
 package dev.nathanxu.dayplanner.data
 
 import android.content.Context
+import dev.nathanxu.dayplanner.domain.ProtectedBlock
+import org.json.JSONArray
+import org.json.JSONObject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.time.DayOfWeek
 import java.time.LocalTime
-
-data class SettingsState(
-    /**
-     * Google accounts whose calendars are shown. null = never chosen (shows everything, and a
-     * single Google account is picked automatically). Empty = you turned them all off.
-     */
-    val accounts: Set<String>? = null,
-    /** Calendars you've switched off inside the linked accounts. */
-    val hiddenCalendars: Set<Long> = emptySet(),
-    /** Calendar that routines are written to. null = the first linked account's main calendar. */
-    val routineCalendarId: Long? = null,
-    /** Start point for the first journey of the day. */
-    val home: String? = null,
-    /** TravelMode name: TRANSIT, WALK, BICYCLE or DRIVE. */
-    val travelMode: String = "TRANSIT",
-    /** Extra minutes on top of travel time before a "leave now" alert. */
-    val bufferMinutes: Int = 10,
-    val leaveAlerts: Boolean = true,
-    val morningSummary: Boolean = true,
-    val morningTime: LocalTime = LocalTime.of(7, 30),
-)
 
 /** Tiny SharedPreferences-backed store; observable so the UI updates on change. */
 class Settings(context: Context) {
@@ -51,8 +34,46 @@ class Settings(context: Context) {
             leaveAlerts = sp.getBoolean(KEY_LEAVE, true),
             morningSummary = sp.getBoolean(KEY_MORNING, true),
             morningTime = sp.getInt(KEY_MORNING_AT, 7 * 60 + 30).let { LocalTime.of(it / 60, it % 60) },
+            remindTodos = sp.getBoolean(KEY_REMIND, true),
+            reminderLead = sp.getInt(KEY_REMIND_LEAD, 0),
+            workStart = time(sp.getInt(KEY_WORK_START, 8 * 60)),
+            workEnd = time(sp.getInt(KEY_WORK_END, 22 * 60)),
+            breakMinutes = sp.getInt(KEY_BREAK, 10),
+            defaultMinutes = sp.getInt(KEY_DEFAULT_MIN, 30),
+            protectedBlocks = runCatching { readProtected(sp.getString(KEY_PROTECTED, "[]")!!) }.getOrDefault(emptyList()),
+            places = runCatching { readPlaces(sp.getString(KEY_PLACES, "[]")!!) }.getOrDefault(emptyList()),
+            weeklyReview = sp.getBoolean(KEY_REVIEW, true),
+            reviewDay = runCatching { DayOfWeek.valueOf(sp.getString(KEY_REVIEW_DAY, "SUNDAY")!!) }.getOrDefault(DayOfWeek.SUNDAY),
+            reviewTime = time(sp.getInt(KEY_REVIEW_AT, 18 * 60)),
+            onboarded = sp.getBoolean(KEY_ONBOARDED, false),
         )
     }
+
+    private fun time(min: Int): LocalTime = if (min >= 24 * 60) LocalTime.MAX else LocalTime.of(min / 60, min % 60)
+    private fun min(t: LocalTime): Int = if (t == LocalTime.MAX) 24 * 60 else t.hour * 60 + t.minute
+
+    private fun readProtected(json: String): List<ProtectedBlock> {
+        val a = JSONArray(json)
+        return (0 until a.length()).map { i ->
+            val o = a.getJSONObject(i)
+            ProtectedBlock(o.getInt("days"), time(o.getInt("start")), time(o.getInt("end")), o.getString("tag"), o.getString("label"))
+        }
+    }
+
+    private fun writeProtected(list: List<ProtectedBlock>) = JSONArray().apply {
+        list.forEach {
+            put(JSONObject().put("days", it.daysMask).put("start", min(it.start)).put("end", min(it.end)).put("tag", it.tag).put("label", it.label))
+        }
+    }.toString()
+
+    private fun readPlaces(json: String): List<SavedPlace> {
+        val a = JSONArray(json)
+        return (0 until a.length()).map { i -> a.getJSONObject(i).let { SavedPlace(it.getString("name"), it.getString("address")) } }
+    }
+
+    private fun writePlaces(list: List<SavedPlace>) = JSONArray().apply {
+        list.forEach { put(JSONObject().put("name", it.name).put("address", it.address)) }
+    }.toString()
 
     fun update(transform: (SettingsState) -> SettingsState) {
         val next = transform(_state.value)
@@ -67,6 +88,18 @@ class Settings(context: Context) {
             putBoolean(KEY_LEAVE, next.leaveAlerts)
             putBoolean(KEY_MORNING, next.morningSummary)
             putInt(KEY_MORNING_AT, next.morningTime.hour * 60 + next.morningTime.minute)
+            putBoolean(KEY_REMIND, next.remindTodos)
+            putInt(KEY_REMIND_LEAD, next.reminderLead)
+            putInt(KEY_WORK_START, min(next.workStart))
+            putInt(KEY_WORK_END, min(next.workEnd))
+            putInt(KEY_BREAK, next.breakMinutes)
+            putInt(KEY_DEFAULT_MIN, next.defaultMinutes)
+            putString(KEY_PROTECTED, writeProtected(next.protectedBlocks))
+            putString(KEY_PLACES, writePlaces(next.places))
+            putBoolean(KEY_REVIEW, next.weeklyReview)
+            putString(KEY_REVIEW_DAY, next.reviewDay.name)
+            putInt(KEY_REVIEW_AT, min(next.reviewTime))
+            putBoolean(KEY_ONBOARDED, next.onboarded)
         }.apply()
         _state.value = next
     }
@@ -82,5 +115,17 @@ class Settings(context: Context) {
         const val KEY_LEAVE = "leave_alerts"
         const val KEY_MORNING = "morning_summary"
         const val KEY_MORNING_AT = "morning_at"
+        const val KEY_REMIND = "remind_todos"
+        const val KEY_REMIND_LEAD = "remind_lead"
+        const val KEY_WORK_START = "work_start"
+        const val KEY_WORK_END = "work_end"
+        const val KEY_BREAK = "break_minutes"
+        const val KEY_DEFAULT_MIN = "default_minutes"
+        const val KEY_PROTECTED = "protected_blocks"
+        const val KEY_PLACES = "places"
+        const val KEY_REVIEW = "weekly_review"
+        const val KEY_REVIEW_DAY = "review_day"
+        const val KEY_REVIEW_AT = "review_at"
+        const val KEY_ONBOARDED = "onboarded"
     }
 }

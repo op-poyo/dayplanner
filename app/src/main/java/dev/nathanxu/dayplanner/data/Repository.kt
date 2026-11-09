@@ -27,7 +27,28 @@ import dev.nathanxu.dayplanner.domain.later
 import dev.nathanxu.dayplanner.travel.TravelMode
 import dev.nathanxu.dayplanner.travel.TravelService
 import dev.nathanxu.dayplanner.widget.TodayWidget
+import dev.nathanxu.dayplanner.domain.ReminderInput
+import dev.nathanxu.dayplanner.domain.Block
+import dev.nathanxu.dayplanner.domain.Plan
+import dev.nathanxu.dayplanner.domain.PlanCandidate
+import dev.nathanxu.dayplanner.domain.PlanInputs
+import dev.nathanxu.dayplanner.domain.Priority
+import dev.nathanxu.dayplanner.domain.Scheduler
+import kotlinx.coroutines.flow.map
+import androidx.room.withTransaction
+import dev.nathanxu.dayplanner.domain.ReviewTask
+import dev.nathanxu.dayplanner.domain.RoutineInput
+import dev.nathanxu.dayplanner.domain.WeekSummary
+import dev.nathanxu.dayplanner.domain.WeeklyReview
+import java.time.Instant
+import java.time.ZoneId
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,6 +91,8 @@ data class PlanDraft(
     val target: Int,
     val cadence: Cadence,
     val recurring: Boolean,
+    /** Stored priority (see [Priority.store]). */
+    val priority: String? = null,
 )
 
 class Repository(
@@ -102,20 +125,26 @@ class Repository(
         db.goals().observeActive(),
         db.tasks().observeGoalStats(today),
         db.tasks().observeSteps(),
-    ) { goals, stats, steps ->
+        db.tasks().observeDoneByDay(),
+    ) { goals, stats, steps, byDay ->
         val statsBy = stats.associateBy { it.goalId }
         val stepsBy = steps.groupBy { it.goalId }
+        val daysBy = byDay.groupBy { it.goalId }
         goals.filter { !it.end.isBefore(today) }.map { g ->
             val s = statsBy[g.id]
-            GoalProgress(
-                goal = g,
-                status = GoalStatus.of(
+            val status = if (g.isOngoing) {
+                val cadence = g.effectiveCadence.let { if (it == Cadence.NONE) Cadence.DAILY else it }
+                val from = Pacing.bucketStart(cadence, g.start, today)
+                val inBucket = daysBy[g.id].orEmpty().filter { !it.date.isBefore(from) && !it.date.isAfter(today) }.sumOf { it.units }
+                GoalStatus.ongoing(g.target, inBucket, s?.todayUnits ?: 0, s?.todayDoneUnits ?: 0)
+            } else {
+                GoalStatus.of(
                     target = g.target, start = g.start, end = g.end, today = today,
                     doneUnits = s?.doneUnits ?: 0, stepTotal = s?.stepTotal ?: 0, stepDone = s?.stepDone ?: 0,
                     todayUnits = s?.todayUnits ?: 0, todayDoneUnits = s?.todayDoneUnits ?: 0,
-                ),
-                steps = stepsBy[g.id].orEmpty(),
-            )
+                )
+            }
+            GoalProgress(goal = g, status = status, steps = stepsBy[g.id].orEmpty())
         }
     }
 
@@ -252,20 +281,7 @@ class Repository(
             if (g.recurring) goals.insert(renewed(g, date))
         }
 
-        for (g in goals.active()) {
-            val cadence = g.effectiveCadence
-            if (cadence == Cadence.NONE || g.target <= 1 || !g.isActiveOn(date)) continue
-            val doneBefore = tasks.doneUnitsBefore(g.id, date)
-            val q = Pacing.quotaToday(g.target, g.start, g.end, cadence, date, doneBefore)
-            if (q > 0) {
-                tasks.insertIgnore(
-                    Task(
-                        title = g.title, date = date, category = g.category, goalId = g.id,
-                        units = q, genKey = GenKeys.split(g.id, date),
-                    )
-                )
-            }
-        }
+        for (g in goals.active()) syncSplit(g, date)
 
         for (r in db.routines().active()) {
             if (Days.has(r.daysMask, date.dayOfWeek)) {
@@ -277,6 +293,40 @@ class Repository(
                 )
             }
         }
+    }
+
+    /**
+     * Keeps today's to-do for a plan equal to what's actually still left today: created, resized
+     * or removed after every change (+1, −1, ticks, edits). Because it's recalculated rather than
+     * nudged up and down, spamming +1/−1 can't inflate it.
+     */
+    private suspend fun syncSplit(g: Goal, date: LocalDate) {
+        val tasks = db.tasks()
+        val key = GenKeys.split(g.id, date)
+        val existing = tasks.byKey(key)
+        if (existing?.done == true) return
+        val cadence = g.effectiveCadence.let { if (g.isOngoing && it == Cadence.NONE) Cadence.DAILY else it }
+        val wanted = cadence != Cadence.NONE && g.isActiveOn(date) && (g.isOngoing || g.target > 1)
+        val remaining = if (!wanted) 0 else Pacing.remainingToday(
+            target = g.target, start = g.start, end = g.end, cadence = cadence, today = date,
+            doneBeforeToday = tasks.doneUnitsBefore(g.id, date),
+            doneToday = tasks.doneUnitsOn(g.id, date, key),
+            doneInBucket = tasks.doneUnitsBetween(g.id, Pacing.bucketStart(cadence, g.start, date), date.plusDays(1)),
+        )
+        when {
+            remaining <= 0 -> existing?.let { tasks.delete(it.id) }
+            existing == null -> tasks.insertIgnore(
+                Task(
+                    title = g.title, date = date, category = g.category, goalId = g.id,
+                    units = remaining, genKey = key,
+                )
+            )
+            existing.units != remaining || existing.title != g.title -> tasks.update(existing.copy(units = remaining, title = g.title))
+        }
+    }
+
+    private suspend fun syncSplit(goalId: Long, date: LocalDate) {
+        db.goals().get(goalId)?.let { syncSplit(it, date) }
     }
 
     /** Next instance of a repeating plan, covering [date]. */
@@ -307,6 +357,8 @@ class Repository(
                     append("Added “${p.title}”")
                     append(" · ").append(p.date?.let { if (it == today) "today" else dayFmt.format(it) } ?: "someday")
                     p.time?.let { append(" ").append(hm.format(it)) }
+                    p.deadline?.let { append(" · due ").append(if (it == today) "today" else dayFmt.format(it)) }
+                    if (p.priority != Priority.NORMAL) append(" · ").append(p.priority.label.lowercase()).append(" priority")
                     if (goal != null) append(" → ${goal.title}")
                     else if (p.goalHint != null) append(" (no plan matched ^${p.goalHint})")
                     newTag?.let { append(" · new tag ${it.name}") }
@@ -321,7 +373,7 @@ class Repository(
                     )
                 )
                 ensureFor(today)
-                refreshWidget()
+                changed()
                 val split = if (p.target > 1) ", split into daily to-dos" else ""
                 "Plan added: ${p.title} ×${p.target} ${p.period.label.lowercase()}$split" +
                     (if (p.recurring) " ↻" else "") + (newTag?.let { " · new tag ${it.name}" } ?: "")
@@ -338,21 +390,24 @@ class Repository(
                 Duration.between(d.startTime, d.endTime).toMinutes().toInt()
             } else null
             db.tasks().insert(
-                Task(title = d.title.trim(), date = d.start, time = d.startTime, minutes = minutes, category = d.tag)
+                Task(title = d.title.trim(), date = d.start, time = d.startTime, minutes = minutes, category = d.tag, priority = d.priority)
             )
-            refreshWidget()
+            changed()
             return "Added “${d.title.trim()}” · " + if (d.start == today) "today" else dayFmt.format(d.start)
         }
         db.goals().insert(
             Goal(
                 title = d.title.trim(), period = Period.CUSTOM, periodStart = d.start, endDate = d.end,
-                target = d.target.coerceAtLeast(1), recurring = d.recurring, category = d.tag,
-                cadence = d.cadence, split = d.cadence != Cadence.NONE,
+                target = d.target.coerceAtLeast(1), recurring = d.recurring, category = d.tag, priority = d.priority,
+                // An ongoing task always breaks down (that's what "3 a week, forever" means).
+                cadence = if (Pacing.isOngoing(d.end) && d.cadence == Cadence.NONE) Cadence.DAILY else d.cadence,
+                split = Pacing.isOngoing(d.end) || d.cadence != Cadence.NONE,
             )
         )
         ensureFor(today)
-        refreshWidget()
-        val range = "${dayFmt.format(d.start)} – ${dayFmt.format(d.end)}"
+        changed()
+        val range = if (Pacing.isOngoing(d.end)) "ongoing from ${dayFmt.format(d.start)}"
+        else "${dayFmt.format(d.start)} – ${dayFmt.format(d.end)}"
         val breakdown = if (d.target > 1 && d.cadence != Cadence.NONE) " · ${d.cadence.label.lowercase()} to-dos" else ""
         return "Plan added: ${d.title.trim()} · $range$breakdown"
     }
@@ -371,9 +426,10 @@ class Repository(
             Task(
                 title = p.title, date = p.date, time = p.time, minutes = p.minutes, goalId = goal?.id,
                 category = if (p.tag == null && goal != null) goal.category else tagKey,
+                priority = Priority.store(p.priority), deadline = p.deadline,
             )
         )
-        refreshWidget()
+        changed()
         return newTag
     }
 
@@ -381,24 +437,31 @@ class Repository(
     suspend fun createTask(task: Task): String {
         if (task.title.isBlank()) return "Give it a title"
         db.tasks().insert(task.copy(id = 0, title = task.title.trim(), createdAt = System.currentTimeMillis()))
-        refreshWidget()
+        changed()
         return "Added “${task.title.trim()}”"
     }
 
     /** Puts back something you just deleted (snackbar Undo). */
     suspend fun restoreTask(task: Task) {
         db.tasks().insertIgnore(task)
-        refreshWidget()
+        changed()
     }
 
     suspend fun updateTask(task: Task) {
-        db.tasks().update(task)
-        refreshWidget()
+        val old = db.tasks().get(task.id)
+        var next = task
+        // Moved by hand: the planner's calendar blocks no longer match, so remove them.
+        if (old?.plannedEvents != null && (old.date != task.date || old.time != task.time)) {
+            deletePlannedEvents(old.plannedEvents, futureOnly = false)
+            next = task.copy(plannedEvents = null)
+        }
+        db.tasks().update(next)
+        changed()
     }
 
     suspend fun setDone(id: Long, done: Boolean) {
         db.tasks().setDone(id, done, if (done) System.currentTimeMillis() else null)
-        refreshWidget()
+        changed()
     }
 
     /**
@@ -414,16 +477,17 @@ class Repository(
                     genKey = GenKeys.log(t.goalId), done = true, doneAt = System.currentTimeMillis(),
                 )
             )
-            db.tasks().update(t.copy(units = t.units - 1))
-            refreshWidget()
+            t.date?.let { syncSplit(t.goalId, it) }
+            changed()
             return
         }
         setDone(id, !t.done)
     }
 
     suspend fun deleteTask(id: Long) {
+        db.tasks().get(id)?.plannedEvents?.let { deletePlannedEvents(it, futureOnly = true) }
         db.tasks().delete(id)
-        refreshWidget()
+        changed()
     }
 
     // ---------- goals / plans ----------
@@ -436,7 +500,8 @@ class Repository(
                 genKey = GenKeys.log(goal.id), done = true, doneAt = System.currentTimeMillis(),
             )
         )
-        refreshWidget()
+        syncSplit(goal.id, today)
+        changed()
     }
 
     /**
@@ -446,17 +511,10 @@ class Repository(
      */
     suspend fun unlogGoal(goal: Goal, today: LocalDate): String {
         val t = db.tasks().latestDoneForGoal(goal.id) ?: return "Nothing to take back on ${goal.title}"
-        if (t.genKey?.startsWith("l:") == true) {
-            db.tasks().delete(t.id)
-            if (t.date == today) {
-                db.tasks().byKey(GenKeys.split(goal.id, today))?.takeIf { !it.done }?.let {
-                    db.tasks().update(it.copy(units = it.units + 1))
-                }
-            }
-        } else {
-            db.tasks().setDone(t.id, false, null)
-        }
-        refreshWidget()
+        if (t.genKey?.startsWith("l:") == true) db.tasks().delete(t.id)
+        else db.tasks().setDone(t.id, false, null)
+        syncSplit(goal.id, today)
+        changed()
         return ""
     }
 
@@ -472,7 +530,7 @@ class Repository(
             db.tasks().deleteOpenSplits(goal.id)
             ensureFor(today)
         }
-        refreshWidget()
+        changed()
     }
 
     /** Moves a plan's end date (and brings a finished one back). Today's to-do is re-paced. */
@@ -481,14 +539,14 @@ class Repository(
         db.goals().update(goal.copy(endDate = newEnd, period = Period.CUSTOM, archived = newEnd.isBefore(today)))
         db.tasks().deleteOpenSplits(goal.id)
         ensureFor(today)
-        refreshWidget()
+        changed()
         return "${goal.title} now runs to ${dayFmt.format(newEnd)}"
     }
 
     suspend fun restoreGoal(goal: Goal, today: LocalDate) {
         db.goals().insert(goal)
         ensureFor(today)
-        refreshWidget()
+        changed()
     }
 
     suspend fun setRecurring(goal: Goal, recurring: Boolean) = db.goals().update(goal.copy(recurring = recurring))
@@ -498,7 +556,7 @@ class Repository(
     suspend fun deleteGoal(goal: Goal) {
         db.tasks().deleteOpenSplits(goal.id)
         db.goals().delete(goal)
-        refreshWidget()
+        changed()
     }
 
     // ---------- routines ----------
@@ -515,7 +573,7 @@ class Repository(
         )
         ensureFor(today)
         val status = syncRoutines()
-        refreshWidget()
+        changed()
         val clashes = p.time?.let { routineClashes(daysMask, it, p.minutes ?: 30, id, today) }.orEmpty()
         val base = "Routine added: ${p.title} · ${Days.describe(daysMask)}" + (p.time?.let { " ${hm.format(it)}" } ?: "")
         return buildString {
@@ -539,7 +597,7 @@ class Repository(
         val id = db.routines().insert(r.copy(id = 0, title = r.title.trim(), calendarEventId = null))
         ensureFor(today)
         val status = syncRoutines()
-        refreshWidget()
+        changed()
         val clashes = r.time?.let { routineClashes(r.daysMask, it, r.minutes ?: 30, id, today) }.orEmpty()
         return buildString {
             append("Routine added: ${r.title.trim()} · ${Days.describe(r.daysMask)}")
@@ -572,7 +630,7 @@ class Repository(
         db.tasks().deleteOpenByKey(GenKeys.routine(r.id, today))
         ensureFor(today)
         val status = syncRoutines()
-        refreshWidget()
+        changed()
         val clashes = r.time?.let { routineClashes(r.daysMask, it, r.minutes ?: 30, r.id, today) }.orEmpty()
         return buildString {
             append(if (status.ok) "Saved “${r.title}”" else "Saved. ${status.message}")
@@ -610,7 +668,7 @@ class Repository(
         db.routines().update(r.copy(active = active))
         if (active) ensureFor(LocalDate.now())
         syncRoutines()
-        refreshWidget()
+        changed()
     }
 
     suspend fun setRoutineSync(r: Routine, sync: Boolean): String? {
@@ -624,7 +682,7 @@ class Repository(
         db.routines().insert(r.copy(calendarEventId = null))
         ensureFor(today)
         syncRoutines()
-        refreshWidget()
+        changed()
     }
 
     suspend fun deleteRoutine(r: Routine) {
@@ -745,6 +803,231 @@ class Repository(
         return DayPlan.travelLegs(events, home).associateWith { (a, b) -> travel.minutes(a, b, mode) }
     }
 
+    // ---------- planner ----------
+
+    /** A plan to review before accepting. */
+    data class PlanPreview(
+        val plan: Plan,
+        val days: List<LocalDate>,
+        /** Things worth knowing about how it was made (e.g. no calendar access). */
+        val notes: List<String>,
+        /** Where blocks would go, or null if they can't be written (with why in [notes]). */
+        val calendarName: String?,
+    )
+
+    /** What accepting changed, so Undo can put it back. */
+    data class PlanUndo(val before: List<Task>, val createdEvents: List<Long>)
+
+    private fun candidateOf(t: Task, goalPriority: Map<Long, String?>, travelBefore: Int) = PlanCandidate(
+        id = t.id, title = t.title, date = t.date, time = t.time, minutes = t.minutes,
+        priority = Priority.of(t.priority ?: t.goalId?.let { goalPriority[it] }),
+        deadline = t.deadline, tag = t.category.takeIf { it != Tags.OTHER },
+        planned = t.plannedEvents != null, done = t.done, travelBefore = travelBefore,
+        generated = t.genKey != null,
+    )
+
+    /** Open planned to-dos whose block is over (for the "slipped" banner). */
+    fun observeSlipped(): Flow<List<Task>> = db.tasks().observePlannedOpen().map { list ->
+        val now = LocalDateTime.now()
+        val rules = settings.current.planRules
+        list.filter { PlanInputs.slipped(candidateOf(it, emptyMap(), 0), now, rules) }
+    }
+
+    /** Plans [dayCount] days from today (today = only what's left of it). Doesn't change anything. */
+    suspend fun previewPlan(dayCount: Int, includeSomeday: Boolean, now: LocalDateTime = LocalDateTime.now()): PlanPreview {
+        val s = settings.current
+        val today = now.toLocalDate()
+        ensureFor(today)
+        val days = (0 until dayCount.coerceIn(1, 14)).map { today.plusDays(it.toLong()) }
+        val rules = s.planRules
+        val notes = mutableListOf<String>()
+
+        // Calendar events (with travel before located ones, when travel times are on).
+        val events = if (calendar.hasPermission()) {
+            runCatching { eventsBetween(today, days.last().plusDays(1)) }.getOrDefault(emptyList())
+        } else {
+            notes += "No calendar access, so lectures and events aren't avoided."
+            emptyList()
+        }
+        val pad = mutableMapOf<Long, Int>()
+        if (travel.enabled) {
+            days.forEach { d ->
+                val dayEvents = events.filter { !it.allDay && it.start.toLocalDate() == d }
+                val minutes = travelMinutes(dayEvents, s.home)
+                DayPlan.legs(dayEvents, s.home).forEach { leg ->
+                    minutes[leg.from to leg.destination]?.let { pad[leg.to.id] = it }
+                }
+            }
+        }
+        val eventBusy = PlanInputs.busyFromEvents(events, days, pad)
+
+        // Timed routines, even on days whose routine to-dos don't exist yet.
+        val routineBusy = db.routines().all().filter { it.active && it.time != null }.flatMap { r ->
+            Clashes.routineBusy(r.daysMask, r.time!!, r.minutes ?: rules.defaultMinutes, r.title, today, days.size)
+        }
+
+        // To-dos: what to place, and timed ones that block time.
+        val goalPriority = db.goals().active().associate { it.id to it.priority }
+        var placesWithoutTravel = 0
+        val candidates = db.tasks().open().map { t ->
+            val travelBefore = if (t.place != null && t.time == null) {
+                val address = s.addressOf(t.place)
+                val home = s.home
+                if (travel.enabled && address != null && home != null && !DayPlan.sameLocation(home, address)) {
+                    val mode = runCatching { TravelMode.valueOf(s.travelMode) }.getOrDefault(TravelMode.TRANSIT)
+                    travel.minutes(home, address, mode) ?: 0
+                } else {
+                    placesWithoutTravel++
+                    0
+                }
+            } else 0
+            candidateOf(t, goalPriority, travelBefore)
+        }
+        if (placesWithoutTravel > 0 && !travel.enabled) notes += "Travel times are off, so no time is kept for getting to places."
+        else if (placesWithoutTravel > 0 && s.home == null) notes += "Set Home in Settings to keep travel time before to-dos with a place."
+
+        val (items, taskBusy) = PlanInputs.select(candidates, days, now, includeSomeday, rules)
+        val plan = Scheduler.plan(items, days, eventBusy + routineBusy + taskBusy, s.protectedBlocks, rules, now)
+
+        val cal = if (calendar.hasWritePermission()) routineCalendar(calendar.calendars()) else Result.failure(IllegalStateException("No calendar write access"))
+        cal.exceptionOrNull()?.let { notes += "Blocks can't be added to Google Calendar: ${it.message}." }
+        return PlanPreview(plan, days, notes, cal.getOrNull()?.name)
+    }
+
+    /**
+     * Gives each placed to-do its first block's date and time; with [addToCalendar], writes every
+     * block to the routines calendar. A slipped to-do's future blocks are replaced.
+     */
+    suspend fun acceptPlan(plan: Plan, addToCalendar: Boolean): Pair<String, PlanUndo> {
+        val s = settings.current
+        val cal = if (addToCalendar && calendar.hasWritePermission()) routineCalendar(calendar.calendars()).getOrNull() else null
+        val before = mutableListOf<Task>()
+        val created = mutableListOf<Long>()
+        var failed = 0
+        for ((id, blocks) in plan.blocks.groupBy { it.itemId }) {
+            val t = db.tasks().get(id) ?: continue
+            if (t.done) continue
+            before += t
+            t.plannedEvents?.let { deletePlannedEvents(it, futureOnly = true) }
+            val ids = if (cal != null) blocks.mapNotNull { b ->
+                runCatching {
+                    calendar.createEvent(
+                        cal.id, eventTitle(t, b), b.date.atTime(b.start), b.date.atTime(b.end),
+                        s.addressOf(t.place), "Planned by DayPlanner. Move it in the app (Plan my day) — edits here aren't read back.",
+                    )
+                }.onFailure { failed++; Log.w("Repository", "Block not added", it) }.getOrNull()
+            } else emptyList()
+            created += ids
+            val first = blocks.minWith(compareBy<Block>({ it.date }, { it.startMin }))
+            db.tasks().update(t.copy(date = first.date, time = first.start, plannedEvents = ids.joinToString(",")))
+        }
+        if (cal != null) calendar.requestSync(cal.accountName)
+        changed()
+        val n = before.size
+        val msg = buildString {
+            append(if (n == 1) "Planned 1 to-do" else "Planned $n to-dos")
+            if (cal != null && created.isNotEmpty()) append(" · added to ${cal.name}")
+            if (failed > 0) append(" · $failed block(s) couldn't be added")
+        }
+        return msg to PlanUndo(before, created)
+    }
+
+    suspend fun undoPlan(undo: PlanUndo) {
+        undo.createdEvents.forEach { calendar.deleteEvent(it) }
+        undo.before.forEach { db.tasks().update(it) }
+        changed()
+    }
+
+    private fun eventTitle(t: Task, b: Block) = if (b.parts > 1) "${t.title} (${b.part}/${b.parts})" else t.title
+
+    /** Removes a to-do's planned blocks (only those still ahead, if [futureOnly]: past ones are history). */
+    private suspend fun deletePlannedEvents(ids: String, futureOnly: Boolean) {
+        val now = LocalDateTime.now()
+        ids.split(',').mapNotNull { it.trim().toLongOrNull() }.forEach { id ->
+            if (!futureOnly || calendar.eventStart(id)?.isAfter(now) == true) calendar.deleteEvent(id)
+        }
+    }
+
+    // ---------- weekly review ----------
+
+    /** Summary of the week starting [weekStart] (Monday), as of [today]. */
+    suspend fun weekSummary(weekStart: LocalDate, today: LocalDate = LocalDate.now()): WeekSummary {
+        val zone = ZoneId.systemDefault()
+        val to = weekStart.plusDays(14) // this week and next
+        val ms = { d: LocalDate -> d.atStartOfDay(zone).toInstant().toEpochMilli() }
+        val tasks = db.tasks().forReview(weekStart, to, ms(weekStart), ms(weekStart.plusDays(7))).map { t ->
+            ReviewTask(
+                id = t.id, title = t.title, date = t.date, done = t.done,
+                doneOn = t.doneAt?.let { Instant.ofEpochMilli(it).atZone(zone).toLocalDate() },
+                tag = t.category, minutes = t.minutes, routineId = t.routineId, deadline = t.deadline,
+                isLog = t.genKey?.startsWith("l:") == true,
+            )
+        }
+        val routines = db.routines().all().map { RoutineInput(it.id, it.title, it.daysMask, it.active) }
+        return WeeklyReview.summarise(tasks, routines, today, weekStart)
+    }
+
+    /** Review action on a slipped to-do: move it to [date] (null = someday), clearing its time. */
+    suspend fun moveTask(id: Long, date: LocalDate?) {
+        val t = db.tasks().get(id) ?: return
+        updateTask(t.copy(date = date, time = null))
+    }
+
+    // ---------- onboarding ----------
+
+    /** Anything made yet? An existing install upgrading to v1.8 skips the first-launch setup. */
+    suspend fun hasAnyData(): Boolean =
+        db.tasks().count() > 0 || db.routines().all().isNotEmpty() || db.goals().all().isNotEmpty() || settings.current.accounts != null
+
+    // ---------- backup ----------
+
+    /** The whole app as a backup file's text. */
+    suspend fun exportBackup(now: LocalDateTime = LocalDateTime.now()): String = BackupCodec.encode(
+        BackupContents(db.tasks().all(), db.goals().all(), db.routines().all(), tags.current, settings.current, now),
+        now,
+    )
+
+    /**
+     * Replaces everything with [text]'s contents. Nothing changes if the file is bad (throws
+     * [BackupCodec.BadBackup]). Returns a summary and the previous state (for Undo).
+     */
+    suspend fun importBackup(text: String): Pair<String, String> {
+        val incoming = BackupCodec.decode(text) // validate before touching anything
+        val previous = exportBackup()
+        val oldRoutines = db.routines().all()
+
+        // Routine events: keep ones the backup still points at (same phone), remove the rest;
+        // routines whose event is gone get a fresh one from syncRoutines().
+        val keepIds = incoming.routines.mapNotNull { it.calendarEventId }.toSet()
+        oldRoutines.mapNotNull { it.calendarEventId }.filter { it !in keepIds }.forEach { calendar.deleteEvent(it) }
+        val routines = incoming.routines.map { r ->
+            val alive = r.calendarEventId?.let { calendar.eventCalendar(it) != null } ?: false
+            if (alive) r else r.copy(calendarEventId = null)
+        }
+
+        db.withTransaction {
+            db.tasks().deleteAll()
+            db.goals().deleteAll()
+            db.routines().deleteAll()
+            db.goals().insertAll(incoming.goals)
+            db.routines().insertAll(routines)
+            db.tasks().insertAll(incoming.tasks)
+        }
+        if (incoming.tags.isNotEmpty()) tags.replaceAll(incoming.tags)
+        val here = settings.current
+        settings.update {
+            incoming.settings.copy(
+                hiddenCalendars = here.hiddenCalendars, routineCalendarId = here.routineCalendarId, onboarded = true,
+            )
+        }
+        val today = LocalDate.now()
+        ensureFor(today)
+        runCatching { syncRoutines() }
+        changed()
+        val from = incoming.exportedAt?.let { " from " + dayFmt.format(it) } ?: ""
+        return "Restored ${incoming.summary()}$from" to previous
+    }
+
     // ---------- notifications ----------
 
     /**
@@ -763,7 +1046,67 @@ class Repository(
         val morning = if (s.morningSummary) {
             AlertPlanner.morningAt(today, s.morningTime, now) ?: AlertPlanner.morningAt(today.plusDays(1), s.morningTime, now)
         } else null
-        alerts.replaceAll(leave, morning)
+        val reminders = if (s.remindTodos) {
+            val routines = db.routines().all().associateBy { it.id }
+            val inputs = db.tasks().timedOpenBetween(today, today.plusDays(2)).mapNotNull { t ->
+                val date = t.date ?: return@mapNotNull null
+                val time = t.time ?: return@mapNotNull null
+                // A routine can switch its reminders off.
+                if (t.routineId != null && routines[t.routineId]?.remind == false) return@mapNotNull null
+                ReminderInput(
+                    taskId = t.id,
+                    title = t.title + if (t.units > 1) " ×${t.units}" else "",
+                    date = date, time = time,
+                    leadMinutes = t.remindBefore ?: s.reminderLead,
+                    minutes = t.minutes,
+                )
+            }
+            AlertPlanner.todoReminders(inputs, now)
+        } else emptyList()
+        val review = if (s.weeklyReview) {
+            val d = WeeklyReview.nextReviewDate(today, s.reviewDay)
+            val at = d.atTime(s.reviewTime)
+            if (at.isAfter(now)) at else d.plusWeeks(1).atTime(s.reviewTime)
+        } else null
+        alerts.replaceAll(leave + reminders, morning, review)
+    }
+
+    /** For the reminder notification: still worth showing? */
+    suspend fun isOpen(taskId: Long): Boolean = db.tasks().get(taskId)?.done == false
+
+    /** "Done" from a reminder notification. */
+    suspend fun markDone(taskId: Long) {
+        val t = db.tasks().get(taskId) ?: return
+        if (!t.done) toggle(taskId)
+    }
+
+    // ---------- change fan-out ----------
+
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private var changeJob: Job? = null
+
+    /**
+     * Called after every edit. Bursts (ticking several things quickly) collapse into one
+     * widget refresh and one alarm re-plan, off the calling coroutine.
+     */
+    private fun changed() {
+        changeJob?.cancel()
+        changeJob = background.launch {
+            delay(400)
+            refreshWidget()
+            runCatching { scheduleAlerts() }.onFailure { Log.w("Repository", "Re-planning alerts failed", it) }
+        }
+    }
+
+    /**
+     * Runs a pending [changed] now. For receivers and widget actions, whose process may be
+     * stopped as soon as they return.
+     */
+    suspend fun flushChanges() {
+        changeJob?.cancel()
+        changeJob = null
+        refreshWidget()
+        runCatching { scheduleAlerts() }.onFailure { Log.w("Repository", "Re-planning alerts failed", it) }
     }
 
     /** Built when the morning notification fires, so it reflects the day as it is then. */

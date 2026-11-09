@@ -49,6 +49,34 @@ object Pacing {
         return if (raw.isAfter(end)) end else raw
     }
 
+    /** End date that marks an ongoing task (no end). */
+    val ONGOING_END: LocalDate = LocalDate.of(9999, 12, 31)
+
+    fun isOngoing(end: LocalDate): Boolean = end == ONGOING_END
+
+    /** First day of the breakdown bucket containing [today]. */
+    fun bucketStart(cadence: Cadence, start: LocalDate, today: LocalDate): LocalDate = when (cadence) {
+        Cadence.DAILY -> today
+        Cadence.THREE_DAY -> start.plusDays(ChronoUnit.DAYS.between(start, today).coerceAtLeast(0) / 3 * 3)
+        Cadence.WEEKLY -> today.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY))
+        Cadence.MONTHLY -> today.withDayOfMonth(1)
+        Cadence.NONE -> start
+    }
+
+    /**
+     * What today's to-do should still ask for, given everything already done today.
+     * Finite task: the pace quota minus today's progress. Ongoing task: [target] per bucket minus
+     * what's been done in the bucket so far (including today).
+     */
+    fun remainingToday(
+        target: Int, start: LocalDate, end: LocalDate, cadence: Cadence, today: LocalDate,
+        doneBeforeToday: Int, doneToday: Int, doneInBucket: Int,
+    ): Int = if (isOngoing(end)) {
+        if (today.isBefore(start)) 0 else (target - doneInBucket).coerceAtLeast(0)
+    } else {
+        (quotaToday(target, start, end, cadence, today, doneBeforeToday) - doneToday).coerceAtLeast(0)
+    }
+
     /** Units to ask for in today's to-do. 0 outside the range or when already on pace. */
     fun quotaToday(
         target: Int, start: LocalDate, end: LocalDate, cadence: Cadence,
@@ -80,6 +108,10 @@ data class GoalStatus(
     val paceDelta: Int? get() = expectedNow?.let { done - it }
 
     companion object {
+        /** Ongoing task: progress is this bucket's count against the per-bucket target. */
+        fun ongoing(target: Int, doneInBucket: Int, todayUnits: Int, todayDoneUnits: Int): GoalStatus =
+            GoalStatus(GoalMode.COUNT, doneInBucket, target.coerceAtLeast(1), null, todayUnits, todayDoneUnits)
+
         /**
          * COUNT: target > 1, progress in units. STEPS: target 1 with linked step tasks, progress =
          * ticked steps / steps. SINGLE: target 1 with no steps, done once anything is logged.

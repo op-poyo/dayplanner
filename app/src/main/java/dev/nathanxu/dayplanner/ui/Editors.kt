@@ -3,6 +3,7 @@ package dev.nathanxu.dayplanner.ui
 import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -43,13 +44,16 @@ import androidx.compose.ui.unit.dp
 import dev.nathanxu.dayplanner.data.Goal
 import dev.nathanxu.dayplanner.data.PlanDraft
 import dev.nathanxu.dayplanner.data.Routine
+import dev.nathanxu.dayplanner.data.SavedPlace
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.data.effectiveCadence
 import dev.nathanxu.dayplanner.data.end
 import dev.nathanxu.dayplanner.data.start
 import dev.nathanxu.dayplanner.domain.Cadence
 import dev.nathanxu.dayplanner.domain.Days
+import dev.nathanxu.dayplanner.domain.Pacing
 import dev.nathanxu.dayplanner.domain.Period
+import dev.nathanxu.dayplanner.domain.Priority
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
 import kotlinx.coroutines.delay
@@ -124,29 +128,103 @@ fun NewTagForm(existing: List<Tag>, onAdd: (String, Int) -> Unit) {
     }
 }
 
-@Composable
-private fun DateField(label: String, date: LocalDate?, onChange: (LocalDate?) -> Unit, clearLabel: String? = "Someday") {
-    val ctx = LocalContext.current
-    FieldLabel(label)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(onClick = {
-            val init = date ?: LocalDate.now()
-            DatePickerDialog(ctx, { _, y, m, d -> onChange(LocalDate.of(y, m + 1, d)) }, init.year, init.monthValue - 1, init.dayOfMonth).show()
-        }) { Text(date?.format(dateFmt) ?: (clearLabel ?: "Pick date")) }
-        if (clearLabel != null && date != null) TextButton(onClick = { onChange(null) }) { Text(clearLabel) }
+/** "Today", "Tomorrow" or e.g. "Wed 11 Nov". */
+private fun friendlyDate(d: LocalDate): String {
+    val today = LocalDate.now()
+    return when (d) {
+        today -> "Today"
+        today.plusDays(1) -> "Tomorrow"
+        today.minusDays(1) -> "Yesterday"
+        else -> d.format(if (d.year == today.year) DateTimeFormatter.ofPattern("EEE d MMM") else dateFmt)
     }
 }
 
+/**
+ * Two chips: the date (default today; tap to pick another) and, if [noneLabel] is given, an
+ * alternative such as "Someday" or "No end". Choosing the alternative keeps the date chip, so
+ * one tap brings the date back.
+ */
 @Composable
-private fun TimeField(label: String, time: LocalTime?, onChange: (LocalTime?) -> Unit) {
+private fun DateField(
+    label: String,
+    date: LocalDate?,
+    onChange: (LocalDate?) -> Unit,
+    noneLabel: String? = "Someday",
+) {
     val ctx = LocalContext.current
+    var last by remember { mutableStateOf(date ?: LocalDate.now()) }
+    LaunchedEffect(date) { if (date != null) last = date }
+    val pick = {
+        DatePickerDialog(ctx, { _, y, m, d -> onChange(LocalDate.of(y, m + 1, d)) }, last.year, last.monthValue - 1, last.dayOfMonth).show()
+    }
     FieldLabel(label)
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        OutlinedButton(onClick = {
-            val init = time ?: LocalTime.of(9, 0)
-            TimePickerDialog(ctx, { _, h, m -> onChange(LocalTime.of(h, m)) }, init.hour, init.minute, true).show()
-        }) { Text(time?.format(timeFmt) ?: "No time") }
-        if (time != null) TextButton(onClick = { onChange(null) }) { Text("Clear") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(
+            selected = date != null,
+            onClick = { if (date == null) onChange(last) else pick() },
+            label = { Text(friendlyDate(last)) },
+            trailingIcon = { Text("▾", style = MaterialTheme.typography.labelSmall) },
+        )
+        if (noneLabel != null) {
+            FilterChip(selected = date == null, onClick = { onChange(null) }, label = { Text(noneLabel) })
+        }
+    }
+}
+
+/**
+ * Two chips: a time (00:00 until you pick one; tap to choose) and "No time" for things that
+ * happen on a day but not at a set hour.
+ */
+@Composable
+private fun TimeField(label: String, time: LocalTime?, onChange: (LocalTime?) -> Unit, noneLabel: String? = "No time") {
+    val ctx = LocalContext.current
+    var last by remember { mutableStateOf(time ?: LocalTime.MIDNIGHT) }
+    LaunchedEffect(time) { if (time != null) last = time }
+    FieldLabel(label)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(
+            selected = time != null,
+            onClick = {
+                TimePickerDialog(ctx, { _, h, m -> onChange(LocalTime.of(h, m)) }, last.hour, last.minute, true).show()
+            },
+            label = { Text(last.format(timeFmt)) },
+            trailingIcon = { Text("▾", style = MaterialTheme.typography.labelSmall) },
+        )
+        if (noneLabel != null) {
+            FilterChip(selected = time == null, onClick = { onChange(null) }, label = { Text(noneLabel) })
+        }
+    }
+}
+
+/** Duration as hours + minutes (stored as minutes). Empty both = no duration. */
+@Composable
+private fun DurationField(minutes: Int?, onChange: (Int?) -> Unit, label: String = "Duration") {
+    var h by remember { mutableStateOf(minutes?.let { (it / 60).takeIf { v -> v > 0 }?.toString() } ?: "") }
+    var m by remember { mutableStateOf(minutes?.let { (it % 60).takeIf { v -> v > 0 }?.toString() } ?: "") }
+    // Follow outside changes (e.g. picking an end time).
+    LaunchedEffect(minutes) {
+        val current = (h.toIntOrNull() ?: 0) * 60 + (m.toIntOrNull() ?: 0)
+        if (current != (minutes ?: 0)) {
+            h = minutes?.let { (it / 60).takeIf { v -> v > 0 }?.toString() } ?: ""
+            m = minutes?.let { (it % 60).takeIf { v -> v > 0 }?.toString() } ?: ""
+        }
+    }
+    fun emit() {
+        val total = (h.toIntOrNull() ?: 0) * 60 + (m.toIntOrNull() ?: 0)
+        onChange(total.takeIf { it > 0 })
+    }
+    FieldLabel(label)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = h, onValueChange = { h = it.filter(Char::isDigit).take(2); emit() },
+            suffix = { Text("h") }, singleLine = true, modifier = Modifier.weight(1f),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        )
+        OutlinedTextField(
+            value = m, onValueChange = { m = it.filter(Char::isDigit).take(3); emit() },
+            suffix = { Text("min") }, singleLine = true, modifier = Modifier.weight(1f),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        )
     }
 }
 
@@ -229,6 +307,20 @@ private fun EditorDialog(
     }
 }
 
+/** null = default from Settings, 0 = at the time, n = n minutes before, −1 = none. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ReminderChips(value: Int?, onChange: (Int?) -> Unit) {
+    FieldLabel("Remind me")
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        listOf<Pair<Int?, String>>(
+            null to "Default", 0 to "At time", 5 to "5 min", 15 to "15 min", 30 to "30 min", 60 to "1 h", -1 to "Off",
+        ).forEach { (v, label) ->
+            FilterChip(selected = value == v, onClick = { onChange(v) }, label = { Text(label) })
+        }
+    }
+}
+
 // ---------- task ----------
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -240,6 +332,7 @@ fun TaskEditor(
     onSave: (Task) -> Unit,
     onDelete: (Task) -> Unit,
     onDismiss: () -> Unit,
+    places: List<SavedPlace> = emptyList(),
 ) {
     var title by remember(task.id) { mutableStateOf(task.title) }
     var date by remember(task.id) { mutableStateOf(task.date) }
@@ -247,6 +340,14 @@ fun TaskEditor(
     var minutes by remember(task.id) { mutableStateOf(task.minutes) }
     var tag by remember(task.id) { mutableStateOf(task.category) }
     var goalId by remember(task.id) { mutableStateOf(task.goalId) }
+    var remindBefore by remember(task.id) { mutableStateOf(task.remindBefore) }
+    var priority by remember(task.id) { mutableStateOf(Priority.of(task.priority)) }
+    var deadline by remember(task.id) { mutableStateOf(task.deadline) }
+    var place by remember(task.id) { mutableStateOf(task.place ?: "") }
+    // Less-used fields stay folded away unless the to-do already uses them.
+    var more by remember(task.id) {
+        mutableStateOf(task.priority != null || task.deadline != null || !task.place.isNullOrBlank())
+    }
 
     val isNew = task.id == 0L
     EditorDialog(
@@ -258,16 +359,72 @@ fun TaskEditor(
         saveLabel = if (isNew) "Add" else "Save",
         canSave = title.isNotBlank(),
         onSave = {
-            onSave(task.copy(title = title.trim(), date = date, time = time, minutes = minutes?.takeIf { it > 0 }, category = tag, goalId = goalId))
+            onSave(
+                task.copy(
+                    title = title.trim(), date = date, time = time, minutes = minutes?.takeIf { it > 0 },
+                    category = tag, goalId = goalId, remindBefore = remindBefore,
+                    priority = Priority.store(priority), deadline = deadline,
+                    place = place.trim().ifEmpty { null },
+                )
+            )
         },
         onDismiss = onDismiss,
         onDelete = if (isNew) null else ({ onDelete(task) }),
     ) {
         TitleField(title) { title = it }
-        DateField("Date", date, { date = it })
-        TimeField("Time", time) { time = it }
-        NumberField("Duration", minutes, { minutes = it }, suffix = "min")
+        DateField("Date", date, { d ->
+            date = d
+            if (d == null) time = null // someday: no time either
+        })
+        if (date != null) TimeField("Time", time, { time = it })
+        if (date != null && time != null) ReminderChips(remindBefore) { remindBefore = it }
+        DurationField(minutes, { minutes = it })
         TagPicker(tag, tagActions) { tag = it }
+        if (!more) {
+            TextButton(onClick = { more = true }, contentPadding = PaddingValues(0.dp)) {
+                Text("Priority, deadline, place ▾")
+            }
+        } else {
+            FieldLabel("Priority")
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf(Priority.HIGH, Priority.NORMAL, Priority.LOW).forEach { p ->
+                    FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text(p.label) })
+                }
+            }
+            DateField("Deadline", deadline, { deadline = it }, noneLabel = "No deadline")
+            if (deadline?.let { dl -> date?.isAfter(dl) } == true) {
+                Text(
+                    "The date is after the deadline.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            FieldLabel("Place")
+            OutlinedTextField(
+                value = place, onValueChange = { place = it }, singleLine = true,
+                placeholder = { Text("Address or saved place") },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (places.isNotEmpty()) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    places.forEach { sp ->
+                        FilterChip(
+                            selected = place.equals(sp.name, ignoreCase = true),
+                            onClick = { place = if (place.equals(sp.name, ignoreCase = true)) "" else sp.name },
+                            label = { Text(sp.name) },
+                        )
+                    }
+                }
+            }
+        }
+        if (task.plannedEvents != null && !isNew) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Time set by Plan my day. Changing the date or time removes its calendar blocks.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (goals.isNotEmpty()) {
             FieldLabel("Counts towards")
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -315,15 +472,26 @@ fun PlanEditor(
     // "@week"/"@month" typed before expanding sets the range to this week/month.
     val prefillEnd = prefill?.period?.let { p -> p.lastDay(p.startOf(today)) }
     var start by remember(key) { mutableStateOf(goal?.start ?: today) }
-    var end by remember(key) { mutableStateOf(goal?.end ?: prefillEnd ?: today.plusDays(6)) }
+    var noEnd by remember(key) { mutableStateOf(goal?.let { Pacing.isOngoing(it.end) } ?: false) }
+    var end by remember(key) {
+        mutableStateOf(goal?.end?.takeIf { !Pacing.isOngoing(it) } ?: prefillEnd ?: today.plusDays(6))
+    }
     var startTime by remember(key) { mutableStateOf<LocalTime?>(null) }
     var endTime by remember(key) { mutableStateOf<LocalTime?>(null) }
     var target by remember(key) { mutableIntStateOf(goal?.target ?: prefill?.target ?: 1) }
     var cadence by remember(key) { mutableStateOf(goal?.effectiveCadence ?: Cadence.DAILY) }
     var recurring by remember(key) { mutableStateOf(goal?.recurring ?: prefill?.recurring ?: false) }
+    var priority by remember(key) { mutableStateOf(Priority.of(goal?.priority)) }
 
-    val singleDay = start == end
-    val valid = title.isNotBlank() && !end.isBefore(start) && target >= 1
+    val singleDay = !noEnd && start == end
+    val valid = title.isNotBlank() && (noEnd || !end.isBefore(start)) && target >= 1
+    val effectiveEnd = if (noEnd) Pacing.ONGOING_END else end
+    // Ongoing tasks always break down; "No breakdown" only makes sense with an end date.
+    val effectiveCadence = when {
+        noEnd && cadence == Cadence.NONE -> Cadence.DAILY
+        !noEnd && target <= 1 -> Cadence.NONE
+        else -> cadence
+    }
 
     EditorDialog(
         title = if (goal == null) "New task" else "Edit task",
@@ -333,20 +501,22 @@ fun PlanEditor(
             if (goal == null) {
                 onCreate(
                     PlanDraft(
-                        title = title.trim(), tag = tag, start = start, end = end,
+                        title = title.trim(), tag = tag, start = start, end = effectiveEnd,
                         startTime = if (singleDay) startTime else null, endTime = if (singleDay) endTime else null,
-                        target = target, cadence = if (target > 1) cadence else Cadence.NONE, recurring = recurring,
+                        target = target, cadence = effectiveCadence, recurring = recurring && !noEnd,
+                        priority = Priority.store(priority),
                     )
                 )
             } else {
-                val datesChanged = start != goal.start || end != goal.end
+                val datesChanged = start != goal.start || effectiveEnd != goal.end
                 onSave(
                     goal.copy(
-                        title = title.trim(), category = tag, target = target, recurring = recurring,
+                        title = title.trim(), category = tag, target = target, recurring = recurring && !noEnd,
                         periodStart = start,
                         period = if (datesChanged) Period.CUSTOM else goal.period,
-                        endDate = if (datesChanged || goal.period == Period.CUSTOM) end else goal.endDate,
-                        cadence = cadence, split = target > 1 && cadence != Cadence.NONE,
+                        endDate = if (datesChanged || goal.period == Period.CUSTOM) effectiveEnd else goal.endDate,
+                        cadence = effectiveCadence, split = effectiveCadence != Cadence.NONE,
+                        priority = Priority.store(priority),
                     )
                 )
             }
@@ -356,46 +526,70 @@ fun PlanEditor(
     ) {
         TitleField(title) { title = it }
         TagPicker(tag, tagActions) { tag = it }
+        FieldLabel("Priority")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(Priority.HIGH, Priority.NORMAL, Priority.LOW).forEach { p ->
+                FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text(p.label) })
+            }
+        }
 
         FieldLabel("When")
         FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AssistChip(onClick = { start = today; end = today }, label = { Text("Today") })
+            AssistChip(onClick = { start = today; end = today; noEnd = false }, label = { Text("Today") })
             AssistChip(onClick = {
-                start = today; end = today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY))
+                start = today; end = today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)); noEnd = false
             }, label = { Text("This week") })
-            AssistChip(onClick = { start = today; end = today.plusWeeks(2).minusDays(1) }, label = { Text("2 weeks") })
+            AssistChip(onClick = { start = today; end = today.plusWeeks(2).minusDays(1); noEnd = false }, label = { Text("2 weeks") })
             AssistChip(onClick = {
-                start = today; end = today.withDayOfMonth(today.lengthOfMonth())
+                start = today; end = today.withDayOfMonth(today.lengthOfMonth()); noEnd = false
             }, label = { Text("This month") })
+            AssistChip(onClick = { noEnd = true }, label = { Text("Ongoing") })
         }
-        DateField("Start", start, { d -> d?.let { start = it; if (end.isBefore(it)) end = it } }, clearLabel = null)
-        DateField("End", end, { d -> d?.let { end = it } }, clearLabel = null)
-        if (end.isBefore(start)) {
+        DateField("Start", start, { d -> d?.let { start = it; if (end.isBefore(it)) end = it } }, noneLabel = null)
+        DateField("End", if (noEnd) null else end, { d ->
+            if (d == null) {
+                noEnd = true
+            } else {
+                noEnd = false
+                end = d
+            }
+        }, noneLabel = "No end")
+        if (!noEnd && end.isBefore(start)) {
             Text("End is before start", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
         if (singleDay && goal == null && target <= 1) {
             Row {
-                Column(Modifier.weight(1f)) { TimeField("Start time", startTime) { startTime = it } }
-                Column(Modifier.weight(1f)) { TimeField("End time", endTime) { endTime = it } }
+                Column(Modifier.weight(1f)) { TimeField("Start time", startTime, { startTime = it }) }
+                Column(Modifier.weight(1f)) { TimeField("End time", endTime, { endTime = it }) }
             }
         }
 
-        NumberField("How many times", target, { target = it ?: 0 }, suffix = "in total")
+        val per = when (effectiveCadence) {
+            Cadence.DAILY -> "per day"
+            Cadence.THREE_DAY -> "per 3 days"
+            Cadence.WEEKLY -> "per week"
+            Cadence.MONTHLY -> "per month"
+            Cadence.NONE -> "per day"
+        }
+        NumberField("How many times", target, { target = it ?: 0 }, suffix = if (noEnd) per else "in total")
         Text(
-            if (target <= 1) "1 = do it once (add steps on its card to track progress)."
-            else "Split into to-dos so you stay on pace:",
+            when {
+                noEnd -> "Ongoing: a to-do appears every ${per.removePrefix("per ")} until you delete it."
+                target <= 1 -> "1 = do it once (add steps on its card to track progress)."
+                else -> "Split into to-dos so you stay on pace:"
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(top = 4.dp),
         )
-        if (target > 1) {
+        if (target > 1 || noEnd) {
             FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Cadence.entries.forEach { c ->
-                    FilterChip(selected = cadence == c, onClick = { cadence = c }, label = { Text(c.label) })
+                Cadence.entries.filter { !noEnd || it != Cadence.NONE }.forEach { c ->
+                    FilterChip(selected = effectiveCadence == c, onClick = { cadence = c }, label = { Text(c.label) })
                 }
             }
         }
-        if (!singleDay) SwitchRow("Repeat when it ends", recurring) { recurring = it }
+        if (!singleDay && !noEnd) SwitchRow("Repeat when it ends", recurring) { recurring = it }
     }
 }
 
@@ -418,6 +612,7 @@ fun RoutineEditor(
     var tag by remember(routine.id) { mutableStateOf(routine.category) }
     var sync by remember(routine.id) { mutableStateOf(routine.syncToCalendar) }
     var active by remember(routine.id) { mutableStateOf(routine.active) }
+    var remind by remember(routine.id) { mutableStateOf(routine.remind ?: true) }
     var clashes by remember(routine.id) { mutableStateOf<List<String>>(emptyList()) }
     val isNew = routine.id == 0L
 
@@ -438,7 +633,7 @@ fun RoutineEditor(
             onSave(
                 routine.copy(
                     title = title.trim(), daysMask = mask, time = time, minutes = minutes?.takeIf { it > 0 },
-                    category = tag, syncToCalendar = sync, active = active,
+                    category = tag, syncToCalendar = sync, active = active, remind = remind,
                 )
             )
         },
@@ -462,14 +657,14 @@ fun RoutineEditor(
         }
         Row {
             Column(Modifier.weight(1f)) {
-                TimeField("Start time", time) { t ->
+                TimeField("Start time", time, { t ->
                     time = t
                     if (t != null && minutes == null) minutes = 30
-                }
+                })
             }
             Column(Modifier.weight(1f)) {
                 val end = time?.let { t -> minutes?.let { t.plusMinutes(it.toLong()) } }
-                TimeField("End time", end) { e ->
+                TimeField("End time", end, noneLabel = null, onChange = { e ->
                     val t = time
                     minutes = when {
                         e == null -> null
@@ -481,10 +676,10 @@ fun RoutineEditor(
                         e.isAfter(t) -> java.time.Duration.between(t, e).toMinutes().toInt()
                         else -> minutes
                     }
-                }
+                })
             }
         }
-        NumberField("or duration", minutes, { minutes = it }, suffix = "min")
+        DurationField(minutes, { minutes = it }, label = "or duration")
         if (clashes.isNotEmpty()) {
             Text(
                 "⚠ Clashes in the next 4 weeks:\n" + clashes.joinToString("\n"),
@@ -502,6 +697,7 @@ fun RoutineEditor(
         }
         TagPicker(tag, tagActions) { tag = it }
         SwitchRow("Add to Google Calendar", sync) { sync = it }
+        if (time != null) SwitchRow("Remind me at the start time", remind) { remind = it }
         if (sync && time == null) {
             Text(
                 "Needs a start time to appear in the calendar.",

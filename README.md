@@ -1,4 +1,4 @@
-# DayPlanner v1.6
+# DayPlanner v1.8
 
 Personal Android planner: Google Calendar timeline with travel times, daily tasks, weekly/monthly goals, routines, and a home-screen widget. Local-first, no server. See `PLAN.md` for the design and its self-review.
 
@@ -48,6 +48,39 @@ One box adds everything:
 - A routine with a time becomes a weekly recurring event in your Google account's main calendar (written through Android's calendar provider; Google's sync uploads it — no OAuth).
 - Pause a routine, turn its 📅 off, or delete it, and the event is removed. If you delete the event in Google Calendar yourself, the app stops syncing that routine instead of re-creating it.
 - The app is the source of truth: edits made to the event in Google Calendar aren't read back.
+
+### v1.8: weekly review, backups, first-launch setup
+
+- **Weekly review** (Sunday 18:00 notification, or the card on Today that day, or Settings → Travel & alerts): to-dos done this week by day and by tag, routine hit rate (e.g. Gym 2/3), long-term progress, what **slipped** with one-tap fixes (*Today*, *Next Mon*, *Someday*, *Done*), and next week's to-dos and deadlines. **Plan the next 7 days** opens the planner. ‹ Earlier shows past weeks. Day and time are in Settings.
+- **Backup / restore** (Settings → Backup): one readable JSON file with every to-do, long-term task, routine, tag and setting. Save it anywhere the file picker offers, Google Drive included. Restore asks first, replaces everything, and offers **Undo**. Calendar choices on the phone are kept; routines get their calendar events back without duplicates. Android's own automatic backup to your Google account stays on as well.
+- **First-launch setup**: welcome, calendar access (and which Google accounts), notifications, planning hours and Home, and a quick-add tutorial with a live box. Every step can be skipped; *Restore from a backup* is on the first screen. Existing installs skip it.
+- Typing quick-add text and tapping ✎ now carries priority and deadline into the full form.
+
+### v1.7: priority, deadlines and Plan my day
+
+- **Priority** (High / Normal / Low) and a **deadline** that's separate from the day you plan to do it. In the to-do form under *Priority, deadline, place*; in quick-add `!high` / `!low` (or `!!`, `!1`, `!3`) and `by fri` / `due 14/11`. `Essay 3h by fri` gets no day of its own, so the planner picks one before Friday. High-priority to-dos show a red **!**; deadlines show as *due Fri* (red when due today or past).
+- **Plan my day** (Today → To-do header): places to-dos that have no time into the free gaps of today, 3 days or a week, around your calendar, timed routines and timed to-dos, with a break around everything. Earliest deadline first, then priority, then longest. To-dos over 2 h are split into sittings (30 min minimum). You review the plan first: untick anything to leave it out, see what didn't fit and why. **Accept** gives each to-do its time (so it gets a reminder) and, optionally, writes the blocks to your routines calendar. **Undo** puts everything back.
+- **Slipped**: when a planned block passes and the to-do isn't ticked, Today offers **Re-plan**.
+- **Settings → Planning**: planning hours, break length, default length for to-dos without one, **protected time** (e.g. weekdays 19:00–21:00 kept for #quant; only that tag goes there), and **saved places**. A to-do's place (saved or typed) gets travel time kept before it, when Home and travel times are set.
+- Editing a planned to-do's date or time removes its old calendar blocks; deleting it removes the blocks still ahead.
+- Long-term tasks have a priority too; their daily to-dos inherit it.
+- DB v5 (nullable columns only, existing data kept).
+
+### v1.6.2: reminders
+
+- **To-dos with a time remind you**: at the time, or 5/15/30/60 min before (set per to-do under *Remind me*, or the default in Settings → Travel & alerts). The notification has **Done** (ticks it off) and **Snooze 10 min**.
+- Routine to-dos remind too; switch it off per routine (*Remind me at the start time*).
+- Ticking off, moving or deleting a to-do re-plans its reminder within a second, so you don't get nagged about finished things. A reminder that fires after you ticked the to-do is dropped.
+- Alarms survive reboots and app updates, and are re-planned daily at 04:30.
+
+### v1.6.1 (fixes)
+
+- **Date and time pickers**: date is a chip that defaults to *Today* (tap to change) next to *Someday*; picking Someday keeps the date chip and clears the time. Time is a chip (00:00 until you choose) next to *No time*.
+- **Duration** is hours + minutes. Quick-add understands `2h`, `2hr`, `2hrs`, `1.5h`, `1h30`, `1hr30min`, `45m`, `90mins`.
+- **Ongoing tasks**: End → *No end* (or the *Ongoing* shortcut). "How many times" becomes per day / 3 days / week / month, and a to-do appears every period until you delete it.
+- **Swipe** works every time (it was acting on an old copy of the row after the first swipe).
+- **+1/−1 drift fixed**: today's ×n to-do is recalculated from actual progress after every change, so spamming can't inflate it (existing inflated ones correct themselves on next open). +1 stops at a finished task's target.
+- Tag dots line up; the grey "Other" tag is no longer shown on to-dos.
 
 ### v1.6
 
@@ -123,7 +156,7 @@ Tap anything to edit it: tasks (title, date, time, duration, category, goal), go
 ```
 ./gradlew test
 ```
-56 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), breakdown buckets, tags, routine clashes, travel legs from home, leave-alert timing, morning summary, periods and weekday masks.
+59 JVM tests cover the quick-add parser (incl. times), timeline/free-slot builder, goal pacing and percentages, calendar layout (multi-day events, overlap lanes, month grid), breakdown buckets, tags, routine clashes, travel legs from home, leave-alert timing, morning summary, periods and weekday masks.
 
 ## Project layout
 

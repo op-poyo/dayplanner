@@ -95,19 +95,24 @@ fun SwipeRow(
     content: @Composable () -> Unit,
 ) {
     val haptic = rememberHaptic()
-    val state = androidx.compose.material3.rememberSwipeToDismissBoxState(
-        confirmValueChange = { v ->
-            when (v) {
-                androidx.compose.material3.SwipeToDismissBoxValue.StartToEnd -> {
-                    haptic(); onToggle(); false
-                }
-                androidx.compose.material3.SwipeToDismissBoxValue.EndToStart -> {
-                    haptic(); onDelete(); true
-                }
-                else -> false
+    // Always call the latest callbacks: the row is reused after it changes (ticked, reordered),
+    // and the swipe state outlives the lambdas it was first created with.
+    val toggle by androidx.compose.runtime.rememberUpdatedState(onToggle)
+    val delete by androidx.compose.runtime.rememberUpdatedState(onDelete)
+    val state = androidx.compose.material3.rememberSwipeToDismissBoxState()
+    // Act once the swipe has settled (not inside confirmValueChange, which can run several times
+    // per gesture), then spring the row back.
+    androidx.compose.runtime.LaunchedEffect(state.currentValue) {
+        when (state.currentValue) {
+            androidx.compose.material3.SwipeToDismissBoxValue.StartToEnd -> {
+                haptic(); toggle(); state.reset()
             }
-        },
-    )
+            androidx.compose.material3.SwipeToDismissBoxValue.EndToStart -> {
+                haptic(); delete(); state.reset()
+            }
+            androidx.compose.material3.SwipeToDismissBoxValue.Settled -> Unit
+        }
+    }
     androidx.compose.material3.SwipeToDismissBox(
         state = state,
         modifier = modifier,
@@ -129,6 +134,19 @@ fun SwipeRow(
         },
     ) {
         Box(Modifier.background(MaterialTheme.colorScheme.surface)) { content() }
+    }
+}
+
+/** A bold "!" before high-priority titles; nothing otherwise. */
+@Composable
+fun PriorityMark(priority: String?) {
+    if (priority == "HIGH") {
+        Text(
+            "!",
+            color = MaterialTheme.colorScheme.error,
+            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+            modifier = Modifier.padding(end = 6.dp),
+        )
     }
 }
 

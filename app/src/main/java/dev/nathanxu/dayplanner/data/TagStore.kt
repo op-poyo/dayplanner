@@ -54,6 +54,9 @@ class TagStore(context: Context) {
         return tag
     }
 
+    /** Restore: replaces every tag. */
+    fun replaceAll(list: List<Tag>) = save(list.distinctBy { it.key })
+
     fun update(tag: Tag) = save(current.map { if (it.key == tag.key) tag else it })
 
     /** Rows using a deleted tag show as Other. The Other tag itself can't be deleted. */

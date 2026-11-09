@@ -7,6 +7,13 @@ import dev.nathanxu.dayplanner.calendar.CalInfo
 import dev.nathanxu.dayplanner.data.Goal
 import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.PlanDraft
+import android.net.Uri
+import dev.nathanxu.dayplanner.data.BackupCodec
+import dev.nathanxu.dayplanner.data.Repository
+import dev.nathanxu.dayplanner.domain.WeekSummary
+import dev.nathanxu.dayplanner.domain.WeeklyReview
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import dev.nathanxu.dayplanner.data.Routine
 import dev.nathanxu.dayplanner.data.SettingsState
 import dev.nathanxu.dayplanner.data.SyncStatus
@@ -307,6 +314,173 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Month cell → open that day in the 3-day view. */
     fun openDay(date: LocalDate) = setCalView(_calView.value.copy(mode = CalendarMode.THREE_DAY, anchor = date, selected = date))
 
+    // ---------- planner ----------
+
+    /** The "Plan my day" sheet: null = closed. */
+    data class PlannerState(
+        val days: Int = 1,
+        val includeSomeday: Boolean = false,
+        val preview: Repository.PlanPreview? = null,
+        /** To-dos you unticked in the review; they're left as they are. */
+        val excluded: Set<Long> = emptySet(),
+        val busy: Boolean = true,
+    )
+
+    private val _planner = MutableStateFlow<PlannerState?>(null)
+    val planner: StateFlow<PlannerState?> = _planner.asStateFlow()
+
+    /** Bumped on refresh so time-based lists (slipped blocks) are re-checked. */
+    private val _tick = MutableStateFlow(0L)
+    val slipped: StateFlow<List<Task>> =
+        _tick.flatMapLatest { repo.observeSlipped() }.stateIn(viewModelScope, started, emptyList())
+
+    private var plannerJob: kotlinx.coroutines.Job? = null
+
+    fun openPlanner(days: Int = 1) {
+        _planner.value = PlannerState(days = days)
+        recomputePlan()
+    }
+
+    fun setPlannerDays(days: Int) {
+        _planner.value = _planner.value?.copy(days = days, excluded = emptySet())
+        recomputePlan()
+    }
+
+    fun setPlannerSomeday(on: Boolean) {
+        _planner.value = _planner.value?.copy(includeSomeday = on, excluded = emptySet())
+        recomputePlan()
+    }
+
+    fun togglePlanned(itemId: Long) {
+        val s = _planner.value ?: return
+        _planner.value = s.copy(excluded = if (itemId in s.excluded) s.excluded - itemId else s.excluded + itemId)
+    }
+
+    private fun recomputePlan() {
+        val s = _planner.value ?: return
+        plannerJob?.cancel()
+        _planner.value = s.copy(busy = true)
+        plannerJob = viewModelScope.launch {
+            val preview = runCatching { repo.previewPlan(s.days, s.includeSomeday) }.getOrElse {
+                _messages.emit("Couldn't plan: ${it.message}")
+                _planner.value = null
+                return@launch
+            }
+            _planner.value = _planner.value?.copy(preview = preview, busy = false)
+        }
+    }
+
+    fun closePlanner() {
+        plannerJob?.cancel()
+        _planner.value = null
+    }
+
+    fun acceptPlan(addToCalendar: Boolean) {
+        val s = _planner.value ?: return
+        val preview = s.preview ?: return
+        _planner.value = null
+        viewModelScope.launch {
+            val plan = preview.plan.copy(blocks = preview.plan.blocks.filter { it.itemId !in s.excluded })
+            val (msg, undo) = repo.acceptPlan(plan, addToCalendar)
+            offerUndo(msg) { repo.undoPlan(undo) }
+            loadCalendarRange()
+            _plan.value = runCatching { repo.todayPlan() }.getOrNull()
+        }
+    }
+
+    // ---------- weekly review ----------
+
+    private val _review = MutableStateFlow<WeekSummary?>(null)
+    /** The review sheet: null = closed. */
+    val review: StateFlow<WeekSummary?> = _review.asStateFlow()
+
+    fun openReview(weekStart: LocalDate = WeeklyReview.weekOf(LocalDate.now())) = viewModelScope.launch {
+        _review.value = runCatching { repo.weekSummary(weekStart) }.getOrElse {
+            _messages.emit("Couldn't load the review: ${it.message}")
+            null
+        }
+    }
+
+    fun closeReview() { _review.value = null }
+
+    private fun reloadReview() {
+        _review.value?.let { openReview(it.weekStart) }
+    }
+
+    /** Slipped to-do → another day (null = someday). */
+    fun reviewMove(task: Long, date: LocalDate?) = viewModelScope.launch {
+        repo.moveTask(task, date)
+        reloadReview()
+    }
+
+    fun reviewDone(task: Long) = viewModelScope.launch {
+        repo.setDone(task, true)
+        reloadReview()
+    }
+
+    fun planNextWeek() {
+        closeReview()
+        openPlanner(7)
+    }
+
+    // ---------- backup ----------
+
+    fun exportBackup(uri: Uri) = viewModelScope.launch {
+        val result = runCatching {
+            val text = repo.exportBackup()
+            withContext(Dispatchers.IO) {
+                getApplication<android.app.Application>().contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray()) }
+                    ?: error("Couldn't open the file")
+            }
+        }
+        _messages.emit(result.fold({ "Backup saved" }, { "Backup failed: ${it.message}" }))
+    }
+
+    fun importBackup(uri: Uri) = viewModelScope.launch {
+        val result = runCatching {
+            val text = withContext(Dispatchers.IO) {
+                getApplication<android.app.Application>().contentResolver.openInputStream(uri)?.use { input ->
+                    val bytes = input.readBytes()
+                    require(bytes.size < 50_000_000) { "File is too big to be a backup" }
+                    String(bytes)
+                } ?: error("Couldn't open the file")
+            }
+            repo.importBackup(text)
+        }
+        result.onSuccess { (msg, previous) ->
+            _onboarding.value = false // restoring from the setup screen finishes it
+            offerUndo(msg) { repo.importBackup(previous) }
+            refresh()
+        }.onFailure {
+            _messages.emit(if (it is BackupCodec.BadBackup) it.message ?: "Not a backup" else "Restore failed: ${it.message}")
+        }
+    }
+
+    // ---------- onboarding ----------
+
+    /** null = still checking; true = show first-launch setup. */
+    private val _onboarding = MutableStateFlow<Boolean?>(null)
+    val onboarding: StateFlow<Boolean?> = _onboarding.asStateFlow()
+
+    private fun checkOnboarding() = viewModelScope.launch {
+        if (repo.settings.current.onboarded) { _onboarding.value = false; return@launch }
+        if (repo.hasAnyData()) {
+            repo.settings.update { it.copy(onboarded = true) }
+            _onboarding.value = false
+        } else {
+            _onboarding.value = true
+        }
+    }
+
+    // After _onboarding exists (properties initialise in order).
+    init { checkOnboarding() }
+
+    fun finishOnboarding() {
+        repo.settings.update { it.copy(onboarded = true) }
+        _onboarding.value = false
+        refresh()
+    }
+
     // ---------- lifecycle ----------
 
     fun refresh() = viewModelScope.launch {
@@ -314,6 +488,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (repo.calendar.hasPermission()) repo.requestCalendarSync()
         val d = LocalDate.now()
         _today.value = d
+        _tick.value = System.currentTimeMillis()
         _canWriteCalendar.value = repo.calendar.hasWritePermission()
         repo.ensureFor(d)
         repo.syncRoutines()
@@ -336,7 +511,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _messages.emit(repo.quickAdd(text, _today.value))
     }
 
-    fun toggle(task: Task) = viewModelScope.launch { repo.setDone(task.id, !task.done) }
+    /** Toggles by id from the database, so a stale copy of the row can't undo itself. */
+    fun toggle(task: Task) = viewModelScope.launch { repo.toggle(task.id) }
 
     fun updateTask(task: Task) = viewModelScope.launch {
         repo.updateTask(task)

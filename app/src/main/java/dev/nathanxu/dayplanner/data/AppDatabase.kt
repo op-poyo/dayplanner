@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Task::class, Goal::class, Routine::class, TravelCache::class],
-    version = 3,
+    version = 5,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -34,9 +34,28 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /** v1.6.2: per-to-do reminder lead time and a per-routine reminder switch. */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `remindBefore` INTEGER")
+                db.execSQL("ALTER TABLE `routines` ADD COLUMN `remind` INTEGER")
+            }
+        }
+
+        /** v1.7: priority, deadline, place, and the planner's calendar blocks. */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `priority` TEXT")
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `deadline` INTEGER")
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `place` TEXT")
+                db.execSQL("ALTER TABLE `tasks` ADD COLUMN `plannedEvents` TEXT")
+                db.execSQL("ALTER TABLE `goals` ADD COLUMN `priority` TEXT")
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "dayplanner.db")
-                .addMigrations(MIGRATION_2_3)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 // Only for very old test installs (v1.0/1.1) that have no migration path.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()

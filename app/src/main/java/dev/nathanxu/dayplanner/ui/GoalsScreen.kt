@@ -50,7 +50,9 @@ import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.data.effectiveCadence
 import dev.nathanxu.dayplanner.data.end
+import dev.nathanxu.dayplanner.data.isOngoing
 import dev.nathanxu.dayplanner.data.start
+import dev.nathanxu.dayplanner.domain.Labels
 import dev.nathanxu.dayplanner.domain.Cadence
 import dev.nathanxu.dayplanner.domain.GoalMode
 import dev.nathanxu.dayplanner.domain.GoalStatus
@@ -202,18 +204,26 @@ private fun TodoLine(t: Task, tag: Tag, a: TodoActions, modifier: Modifier) {
             TagDot(tag.color, 8.dp)
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(
-                    t.title + if (t.units > 1) " ×${t.units}" else "",
-                    maxLines = 2, overflow = TextOverflow.Ellipsis,
-                    textDecoration = if (t.done) TextDecoration.LineThrough else null,
-                    color = if (t.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    PriorityMark(t.priority.takeIf { !t.done })
+                    Text(
+                        t.title + if (t.units > 1) " ×${t.units}" else "",
+                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        textDecoration = if (t.done) TextDecoration.LineThrough else null,
+                        color = if (t.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                val due = t.deadline?.takeIf { !t.done }?.let { Labels.deadline(it, LocalDate.now()) }
                 val meta = listOfNotNull(
                     t.time?.format(DateTimeFormatter.ofPattern("HH:mm")),
                     t.minutes?.let { formatMinutes(it.toLong()) },
+                    due?.first,
                     tag.name,
                 ).joinToString(" · ")
-                Text(meta, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    meta, style = MaterialTheme.typography.bodySmall,
+                    color = if (due?.second == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }
@@ -290,7 +300,7 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalAction
                     }
                     Spacer(Modifier.height(2.dp))
                     Text(rangeLine(g, today), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(detailLine(s), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(detailLine(s, g), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     paceLine(s, g)?.let { (text, behind) ->
                         Text(
                             text,
@@ -340,7 +350,8 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalAction
                     GoalMode.COUNT -> {
                         OutlinedButton(onClick = { haptic(); a.onUnlog(g) }, enabled = s.done > 0) { Text("−1") }
                         Spacer(Modifier.width(6.dp))
-                        FilledTonalButton(onClick = { haptic(); a.onLog(g) }) { Text("+1") }
+                        // A finished count can't go past its target; ongoing ones can (extra is fine).
+                        FilledTonalButton(onClick = { haptic(); a.onLog(g) }, enabled = g.isOngoing || !s.complete) { Text("+1") }
                     }
                     GoalMode.SINGLE -> if (!s.complete) {
                         FilledTonalButton(onClick = { haptic(); a.onLog(g) }) { Text("Done") }
@@ -352,7 +363,7 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalAction
                 TextButton(onClick = { showSteps = !showSteps }) {
                     Text(if (showSteps) "Hide" else if (gp.steps.isEmpty()) "Steps" else "Steps ${gp.steps.size}")
                 }
-                TextButton(onClick = { extending = !extending }) { Text("Extend") }
+                if (!g.isOngoing) TextButton(onClick = { extending = !extending }) { Text("Extend") }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { a.onDelete(g) }) {
                     Icon(Icons.Default.Delete, contentDescription = "Delete task", tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -368,6 +379,15 @@ private fun overallPercent(statuses: List<GoalStatus>): String =
 private val dMMM = DateTimeFormatter.ofPattern("d MMM")
 
 private fun rangeLine(g: Goal, today: LocalDate): String {
+    if (g.isOngoing) {
+        val per = when (g.effectiveCadence) {
+            Cadence.THREE_DAY -> "every 3 days"
+            Cadence.WEEKLY -> "a week"
+            Cadence.MONTHLY -> "a month"
+            else -> "a day"
+        }
+        return "Ongoing since ${g.start.format(dMMM)} · ${g.target} $per"
+    }
     val range = "${g.start.format(dMMM)} – ${g.end.format(dMMM)}"
     val left = ChronoUnit.DAYS.between(today, g.end) + 1
     val timing = when {
@@ -380,7 +400,9 @@ private fun rangeLine(g: Goal, today: LocalDate): String {
 }
 
 
-private fun detailLine(s: GoalStatus): String = when (s.mode) {
+private fun detailLine(s: GoalStatus, g: Goal): String = if (g.isOngoing) {
+    "${s.done} of ${s.total} ${g.effectiveCadence.short.ifEmpty { "today" }}"
+} else when (s.mode) {
     GoalMode.COUNT -> "${s.done} of ${s.total} done"
     GoalMode.STEPS -> "${s.done} of ${s.total} steps done"
     GoalMode.SINGLE -> if (s.complete) "Done" else "Not done yet"
@@ -388,6 +410,10 @@ private fun detailLine(s: GoalStatus): String = when (s.mode) {
 
 /** (text, isBehind) or null. */
 private fun paceLine(s: GoalStatus, g: Goal): Pair<String, Boolean>? {
+    if (g.isOngoing) {
+        val bucket = g.effectiveCadence.short.ifEmpty { "today" }
+        return if (s.complete) "Done $bucket ✓" to false else "${s.total - s.done} left $bucket" to false
+    }
     if (s.mode != GoalMode.COUNT || s.complete) return null
     val cadence = g.effectiveCadence
     val today = when {

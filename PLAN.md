@@ -146,7 +146,15 @@ Ordered by importance:
 - Snackbars: collectLatest + dismiss, so they replace instead of queue; no messages for +1/−1/tick.
 - Next: auto-scheduler (v1.7), then backup/restore toward 2.0.
 
-## 15. Roadmap
+## 15. v1.6.1 fixes
+
+- Date/time chips (Today | Someday, time | No time), hours+minutes duration, wider duration parsing.
+- Ongoing tasks (end = sentinel 9999-12-31; target per bucket). `Pacing.bucketStart/remainingToday`, tested.
+- Swipe: actions moved out of confirmValueChange into a LaunchedEffect on the settled value, callbacks via rememberUpdatedState, toggle by id.
+- Split to-dos recalculated (`syncSplit`) after every change instead of ±1 nudges — fixes the ×25 inflation.
+- Dot alignment; hide the "Other" tag.
+
+## 16. Roadmap
 
 - **v1** (this build): above.
 - **v1.1**: settings screen (travel mode, home address so first/last legs work), notifications for "leave now".

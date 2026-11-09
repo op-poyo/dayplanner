@@ -117,7 +117,12 @@ fun CalendarScreen(
         HorizontalDivider()
 
         when (view.mode) {
-            CalendarMode.SCHEDULE -> ScheduleList(view, today, events, tasksByDay, tagColor, openEvent, onToggleTask, onEditTask, onLoadMore)
+            CalendarMode.SCHEDULE -> {
+                // A planned to-do's calendar block would repeat the to-do line right next to it.
+                val plannedIds = tasks.flatMap { t -> t.plannedEvents.orEmpty().split(',').mapNotNull { it.trim().toLongOrNull() } }.toSet()
+                val listEvents = if (plannedIds.isEmpty()) events else events.mapValues { (_, segs) -> segs.filter { it.event.id !in plannedIds } }
+                ScheduleList(view, today, listEvents, tasksByDay, tagColor, openEvent, onToggleTask, onEditTask, onLoadMore)
+            }
             CalendarMode.THREE_DAY, CalendarMode.WEEK ->
                 TimeGrid(CalendarLayout.gridDays(view.mode, view.anchor), today, events, openEvent, onOpenDay)
             CalendarMode.MONTH -> MonthView(view, today, events, tasksByDay, tagColor, onSelectDay, onOpenDay, openEvent, onToggleTask, onEditTask)

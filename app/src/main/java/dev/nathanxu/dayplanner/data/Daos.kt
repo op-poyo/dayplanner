@@ -16,7 +16,8 @@ private const val TODAY_FILTER = """
 """
 private const val TODAY_ORDER = """
     ORDER BY done ASC, CASE WHEN date IS NULL THEN 1 ELSE 0 END, date ASC,
-    CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC, id ASC
+    CASE WHEN time IS NULL THEN 1 ELSE 0 END, time ASC,
+    CASE priority WHEN 'HIGH' THEN 0 WHEN 'LOW' THEN 2 ELSE 1 END, id ASC
 """
 
 @Dao
@@ -54,6 +55,37 @@ interface TaskDao {
     )
     fun observeAllTodos(sinceMillis: Long): Flow<List<Task>>
 
+    /** Open to-dos with a time in [from, toExclusive), for reminders. */
+    @Query(
+        """
+        SELECT * FROM tasks WHERE $NOT_LOG AND done = 0 AND time IS NOT NULL
+        AND date >= :from AND date < :toExclusive
+        """
+    )
+    suspend fun timedOpenBetween(from: LocalDate, toExclusive: LocalDate): List<Task>
+
+    /** For the weekly review: dated in [from, to), ticked in [fromMs, toMs), or open with a deadline before [to]. */
+    @Query(
+        """
+        SELECT * FROM tasks WHERE (date >= :from AND date < :to) OR (doneAt >= :fromMs AND doneAt < :toMs)
+        OR (done = 0 AND deadline IS NOT NULL AND deadline < :to)
+        """
+    )
+    suspend fun forReview(from: LocalDate, to: LocalDate, fromMs: Long, toMs: Long): List<Task>
+
+    @Query("SELECT * FROM tasks") suspend fun all(): List<Task>
+    @Query("SELECT COUNT(*) FROM tasks") suspend fun count(): Int
+    @Query("DELETE FROM tasks") suspend fun deleteAll()
+    @Insert suspend fun insertAll(tasks: List<Task>)
+
+    /** Every open to-do (not +1 logs), for the planner. */
+    @Query("SELECT * FROM tasks WHERE $NOT_LOG AND done = 0")
+    suspend fun open(): List<Task>
+
+    /** Open to-dos the planner placed, so slipped ones can be offered for re-planning. */
+    @Query("SELECT * FROM tasks WHERE $NOT_LOG AND done = 0 AND plannedEvents IS NOT NULL AND date IS NOT NULL AND time IS NOT NULL")
+    fun observePlannedOpen(): Flow<List<Task>>
+
     @Insert suspend fun insert(task: Task): Long
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
@@ -67,6 +99,32 @@ interface TaskDao {
 
     @Query("SELECT * FROM tasks WHERE genKey = :key")
     suspend fun byKey(key: String): Task?
+
+    /** Units done for a plan on [date], not counting [excludeKey] (today's split itself). */
+    @Query(
+        """
+        SELECT COALESCE(SUM(units), 0) FROM tasks
+        WHERE goalId = :goalId AND done = 1 AND date = :date AND (genKey IS NULL OR genKey != :excludeKey)
+        """
+    )
+    suspend fun doneUnitsOn(goalId: Long, date: LocalDate, excludeKey: String): Int
+
+    @Query(
+        """
+        SELECT COALESCE(SUM(units), 0) FROM tasks
+        WHERE goalId = :goalId AND done = 1 AND date >= :from AND date < :toExclusive
+        """
+    )
+    suspend fun doneUnitsBetween(goalId: Long, from: LocalDate, toExclusive: LocalDate): Int
+
+    /** Done units per plan per day, for ongoing tasks' "this week / this month" counts. */
+    @Query(
+        """
+        SELECT goalId AS goalId, date AS date, SUM(units) AS units FROM tasks
+        WHERE done = 1 AND goalId IS NOT NULL AND date IS NOT NULL GROUP BY goalId, date
+        """
+    )
+    fun observeDoneByDay(): Flow<List<GoalDayUnits>>
 
     @Query("DELETE FROM tasks WHERE genKey = :key AND done = 0")
     suspend fun deleteOpenByKey(key: String)
@@ -130,6 +188,9 @@ interface GoalDao {
     suspend fun get(id: Long): Goal?
 
     @Insert suspend fun insert(goal: Goal): Long
+    @Insert suspend fun insertAll(goals: List<Goal>)
+    @Query("SELECT * FROM goals") suspend fun all(): List<Goal>
+    @Query("DELETE FROM goals") suspend fun deleteAll()
     @Update suspend fun update(goal: Goal)
     @Delete suspend fun delete(goal: Goal)
 }
@@ -146,6 +207,8 @@ interface RoutineDao {
     suspend fun active(): List<Routine>
 
     @Insert suspend fun insert(routine: Routine): Long
+    @Insert suspend fun insertAll(routines: List<Routine>)
+    @Query("DELETE FROM routines") suspend fun deleteAll()
     @Update suspend fun update(routine: Routine)
     @Delete suspend fun delete(routine: Routine)
 }

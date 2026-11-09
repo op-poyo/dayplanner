@@ -51,6 +51,7 @@ import dev.nathanxu.dayplanner.calendar.CalendarSource
 import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.Task
 import dev.nathanxu.dayplanner.data.TodayPlan
+import dev.nathanxu.dayplanner.domain.Labels
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.TimelineItem
@@ -80,6 +81,10 @@ fun TodayScreen(
     onConnectCalendar: () -> Unit,
     onOpenSettings: () -> Unit,
     contentPadding: PaddingValues,
+    slipped: List<Task> = emptyList(),
+    onPlan: () -> Unit = {},
+    reviewDue: Boolean = false,
+    onReview: () -> Unit = {},
 ) {
     val ctx = LocalContext.current
     var showSyntax by rememberSaveable { mutableStateOf(false) }
@@ -102,6 +107,21 @@ fun TodayScreen(
                 Text(if (showSyntax) "Hide syntax" else "Quick-add syntax")
             }
             if (showSyntax) SyntaxCard()
+        }
+
+        if (reviewDue) item {
+            Card(
+                Modifier.fillMaxWidth().padding(top = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+            ) {
+                Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Weekly review", style = MaterialTheme.typography.titleSmall)
+                        Text("See how the week went and plan the next one.", style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = onReview) { Text("Open") }
+                }
+            }
         }
 
         // ---------- schedule ----------
@@ -155,7 +175,27 @@ fun TodayScreen(
         // ---------- tasks ----------
         val goalsById = goals.associateBy { it.goal.id }
         val open = tasks.count { !it.done }
-        item { SectionHeader(if (tasks.isEmpty()) "To-do" else "To-do · $open left") }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionHeader(if (tasks.isEmpty()) "To-do" else "To-do · $open left", Modifier.weight(1f))
+                if (open > 0) TextButton(onClick = onPlan) { Text("Plan my day") }
+            }
+        }
+        if (slipped.isNotEmpty()) item {
+            Card(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+            ) {
+                Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (slipped.size == 1) "“${slipped.first().title}” slipped past its planned time."
+                        else "${slipped.size} planned to-dos slipped past their time.",
+                        Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium,
+                    )
+                    TextButton(onClick = onPlan) { Text("Re-plan") }
+                }
+            }
+        }
         if (tasks.isEmpty()) item {
             EmptyNote("Nothing to do. Type one above, tap ✎ for the full form, or set up routines.")
         }
@@ -176,7 +216,10 @@ fun TodayScreen(
         if (upcoming.isNotEmpty()) {
             item { SectionHeader("Upcoming") }
             items(upcoming.take(15), key = { "u${it.id}" }) { task ->
-                Row(Modifier.fillMaxWidth().clickable { onEditTask(task) }.padding(vertical = 6.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().clickable { onEditTask(task) }.padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
                         task.date?.format(dayFmt) ?: "",
                         modifier = Modifier.width(92.dp),
@@ -299,21 +342,26 @@ private fun TaskRow(
     onBlock: () -> Unit,
 ) {
     val overdue = !task.done && task.date != null && task.date.isBefore(today)
+    val due = task.deadline?.takeIf { !task.done }?.let { Labels.deadline(it, today) }
     val haptic = rememberHaptic()
     // Swipe right to tick, left to delete; tap to edit; the checkbox ticks too.
     SwipeRow(done = task.done, onToggle = onToggle, onDelete = onDelete, modifier = modifier) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onEdit), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = task.done, onCheckedChange = { haptic(); onToggle() })
         Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+            PriorityMark(task.priority.takeIf { !task.done })
             Text(
                 task.title + if (task.units > 1) " ×${task.units}" else "",
                 textDecoration = if (task.done) TextDecoration.LineThrough else null,
                 color = if (task.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                 maxLines = 2, overflow = TextOverflow.Ellipsis,
             )
+            }
             val meta = buildList {
                 task.time?.let { add(it.format(hm)) }
-                add(tag.name)
+                due?.let { add(it.first) }
+                if (tag.key != Tags.OTHER) add(tag.name)
                 task.minutes?.let { add(formatMinutes(it.toLong())) }
                 goal?.let { add("→ ${it.goal.title} ${it.status.percent}%") }
                 when {
@@ -323,11 +371,13 @@ private fun TaskRow(
                 if (task.routineId != null) add("↻")
             }.joinToString(" · ")
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TagDot(tag.color, 8.dp)
-                Spacer(Modifier.width(4.dp))
+                if (tag.key != Tags.OTHER) {
+                    TagDot(tag.color, 8.dp)
+                    Spacer(Modifier.width(6.dp))
+                }
                 Text(
                 meta, style = MaterialTheme.typography.bodySmall,
-                color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (overdue || due?.second == true) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -348,6 +398,9 @@ val SYNTAX_ROWS = listOf(
     "@week / @month" to "make it a long-term task for this week/month",
     "x5" to "how many times in total",
     "!r" to "repeat when it ends",
+    "!high / !low  (or !! / !1 / !3)" to "priority",
+    "by fri / due 14/11" to "deadline (with no date, the planner picks a day before it)",
+    "14/11" to "a date (day/month)",
 )
 
 @Composable

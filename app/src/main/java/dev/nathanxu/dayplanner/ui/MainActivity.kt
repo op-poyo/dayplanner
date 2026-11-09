@@ -23,7 +23,15 @@ import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +65,7 @@ import dev.nathanxu.dayplanner.domain.GoalDraft
 import dev.nathanxu.dayplanner.domain.QuickAdd
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
+import dev.nathanxu.dayplanner.domain.Priority
 import dev.nathanxu.dayplanner.domain.TaskDraft
 import java.time.LocalDate
 import dev.nathanxu.dayplanner.data.Task
@@ -68,12 +77,15 @@ class MainActivity : ComponentActivity() {
     /** Incremented each time the widget's "+" opens the app, so the quick-add box takes focus. */
     private val quickAddRequests = mutableIntStateOf(0)
 
+    /** Incremented when the weekly-review notification is tapped. */
+    private val reviewRequests = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         handleIntent(intent)
         setContent {
-            DayPlannerTheme { AppRoot(vm, quickAddRequests.intValue) }
+            DayPlannerTheme { AppRoot(vm, quickAddRequests.intValue, reviewRequests.intValue) }
         }
     }
 
@@ -92,6 +104,10 @@ class MainActivity : ComponentActivity() {
             intent.removeExtra(EXTRA_QUICK_ADD)
             quickAddRequests.intValue++
         }
+        if (intent?.getStringExtra(Notifier.EXTRA_OPEN) == Notifier.OPEN_REVIEW) {
+            intent.removeExtra(Notifier.EXTRA_OPEN)
+            reviewRequests.intValue++
+        }
     }
 
     companion object {
@@ -108,7 +124,7 @@ private enum class Tab(val label: String, val icon: ImageVector) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
+private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int = 0) {
     val today by vm.today.collectAsStateWithLifecycle()
     val tasks by vm.tasks.collectAsStateWithLifecycle()
     val upcoming by vm.upcoming.collectAsStateWithLifecycle()
@@ -137,6 +153,20 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     var tasksSegment by rememberSaveable { mutableIntStateOf(0) }
     val allTodos by vm.allTodos.collectAsStateWithLifecycle()
     val finished by vm.finished.collectAsStateWithLifecycle()
+    val planner by vm.planner.collectAsStateWithLifecycle()
+    val slipped by vm.slipped.collectAsStateWithLifecycle()
+    val review by vm.review.collectAsStateWithLifecycle()
+    val onboarding by vm.onboarding.collectAsStateWithLifecycle()
+    var pendingRestore by remember { mutableStateOf<Uri?>(null) }
+    // Backups go through Android's file picker, so Google Drive, Downloads etc. all work.
+    val backupFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        uri?.let { vm.exportBackup(it) }
+    }
+    val restoreFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        pendingRestore = uri
+    }
+    val startBackup = { backupFile.launch("DayPlanner-backup-${LocalDate.now()}.json") }
+    val startRestore = { restoreFile.launch(arrayOf("application/json", "application/octet-stream", "text/plain", "*/*")) }
     var editingRoutine by remember { mutableStateOf<Routine?>(null) }
 
     val snackbar = remember { SnackbarHostState() }
@@ -161,7 +191,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
     LaunchedEffect(Unit) {
         val prefs = context.getSharedPreferences("ui", Context.MODE_PRIVATE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !Notifier.hasPermission(context) &&
-            !prefs.getBoolean("asked_notifications", false)
+            !prefs.getBoolean("asked_notifications", false) && vm.settings.value.onboarded
         ) {
             prefs.edit().putBoolean("asked_notifications", true).apply()
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
@@ -203,6 +233,9 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 }
             },
             testNotification = { vm.testNotification() },
+            exportBackup = startBackup,
+            importBackup = startRestore,
+            openReview = { vm.openReview() },
         )
     }
     // Not remembered: these capture today and tags, which change.
@@ -251,6 +284,9 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             if (result == SnackbarResult.ActionPerformed) m.action?.invoke()
         }
     }
+    LaunchedEffect(reviewRequest) {
+        if (reviewRequest > 0) vm.openReview()
+    }
     LaunchedEffect(quickAddRequest) {
         if (quickAddRequest > 0) {
             showSettings = false
@@ -259,6 +295,41 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             kotlinx.coroutines.delay(150)
             runCatching { quickAddFocus.requestFocus() }
         }
+    }
+
+    pendingRestore?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingRestore = null },
+            title = { Text("Restore this backup?") },
+            text = { Text("Everything in the app is replaced by the backup's to-dos, long-term tasks, routines, tags and settings. You can undo straight after.") },
+            confirmButton = {
+                TextButton(onClick = { vm.importBackup(uri); pendingRestore = null }) { Text("Restore") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRestore = null }) { Text("Cancel") } },
+        )
+    }
+
+    // First launch: setup instead of the app (and nothing while we're still checking).
+    if (onboarding != false) {
+        if (onboarding == true) Box(Modifier.fillMaxSize()) {
+            Onboarding(
+                settings = settings,
+                calendarConnected = plan?.calendarConnected == true,
+                accounts = calendars.filter { it.isGoogle }.map { it.accountName }.distinct(),
+                notificationsOn = alertState.notificationsOn,
+                a = OnboardingActions(
+                    requestCalendar = requestCalendar,
+                    setAccountLinked = { acc, on -> vm.setAccountLinked(acc, on) },
+                    requestNotifications = settingsActions.requestNotifications,
+                    update = { t -> vm.updateTravel(t) },
+                    quickAdd = { vm.quickAdd(it) },
+                    restore = startRestore,
+                    finish = { vm.finishOnboarding() },
+                ),
+            )
+            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(16.dp))
+        }
+        return
     }
 
     Scaffold(
@@ -353,6 +424,10 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
                 onConnectCalendar = requestCalendar,
                 onOpenSettings = openSettings,
                 contentPadding = padding,
+                slipped = slipped,
+                onPlan = { vm.openPlanner(1) },
+                reviewDue = settings.weeklyReview && today.dayOfWeek == settings.reviewDay,
+                onReview = { vm.openReview() },
             )
             Tab.CALENDAR -> CalendarScreen(
                 view = calView,
@@ -426,6 +501,32 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int) {
             },
             onDelete = { vm.delete(it); editingTask = null },
             onDismiss = { editingTask = null },
+            places = settings.places,
+        )
+    }
+
+    review?.let { s ->
+        ReviewSheet(
+            s = s,
+            goals = goals,
+            tags = tags,
+            onWeek = { vm.openReview(it) },
+            onMove = { id, d -> vm.reviewMove(id, d) },
+            onDone = { vm.reviewDone(it) },
+            onPlanNextWeek = { vm.planNextWeek() },
+            onDismiss = { vm.closeReview() },
+        )
+    }
+
+    planner?.let { p ->
+        PlanSheet(
+            state = p,
+            tags = tags,
+            onDays = { vm.setPlannerDays(it) },
+            onSomeday = { vm.setPlannerSomeday(it) },
+            onToggle = { vm.togglePlanned(it) },
+            onAccept = { vm.acceptPlan(it) },
+            onDismiss = { vm.closePlanner() },
         )
     }
     if (creatingPlan || editingGoal != null) {
@@ -469,5 +570,7 @@ private fun draftTask(text: String, today: LocalDate, tags: List<Tag>, vm: MainV
         time = d?.time,
         minutes = d?.minutes,
         category = tagKeyFor(d?.tag, tags, vm),
+        priority = d?.priority?.let { Priority.store(it) },
+        deadline = d?.deadline,
     )
 }

@@ -224,6 +224,8 @@ class ToggleTaskAction : ActionCallback {
     override suspend fun onAction(context: Context, glanceId: GlanceId, parameters: ActionParameters) {
         val id = parameters[TaskIdKey] ?: return
         context.repository.toggle(id)
+        // Update the widget now rather than after the debounce: the app may not be running.
+        context.repository.flushChanges()
     }
 }
 

@@ -182,6 +182,45 @@ class CalendarSource(private val context: Context) {
         uri.lastPathSegment?.toLongOrNull() ?: error("Calendar provider returned no event id")
     }
 
+    /** Inserts a one-off event (a planned block). Returns its id; throws with a readable message. */
+    suspend fun createEvent(
+        calendarId: Long,
+        title: String,
+        start: LocalDateTime,
+        end: LocalDateTime,
+        location: String?,
+        description: String,
+    ): Long = withContext(Dispatchers.IO) {
+        require(hasWritePermission()) { "No calendar write permission" }
+        val zone = ZoneId.systemDefault()
+        val values = ContentValues().apply {
+            put(Events.CALENDAR_ID, calendarId)
+            put(Events.TITLE, title)
+            put(Events.DESCRIPTION, description)
+            put(Events.DTSTART, start.atZone(zone).toInstant().toEpochMilli())
+            put(Events.DTEND, end.atZone(zone).toInstant().toEpochMilli())
+            put(Events.EVENT_TIMEZONE, zone.id)
+            put(Events.AVAILABILITY, Events.AVAILABILITY_BUSY)
+            location?.let { put(Events.EVENT_LOCATION, it) }
+        }
+        val uri = context.contentResolver.insert(Events.CONTENT_URI, values)
+            ?: error("Calendar provider rejected the event")
+        uri.lastPathSegment?.toLongOrNull() ?: error("Calendar provider returned no event id")
+    }
+
+    /** Start of a live event, or null if it's gone. */
+    suspend fun eventStart(eventId: Long): LocalDateTime? = withContext(Dispatchers.IO) {
+        if (!hasPermission()) return@withContext null
+        runCatching {
+            context.contentResolver.query(
+                Events.CONTENT_URI, arrayOf(Events.DTSTART),
+                "${Events._ID} = ? AND ${Events.DELETED} = 0", arrayOf(eventId.toString()), null,
+            )?.use {
+                if (it.moveToFirst()) LocalDateTime.ofInstant(Instant.ofEpochMilli(it.getLong(0)), ZoneId.systemDefault()) else null
+            }
+        }.getOrNull()
+    }
+
     suspend fun deleteEvent(eventId: Long): Boolean = withContext(Dispatchers.IO) {
         if (!hasWritePermission()) return@withContext false
         runCatching {
