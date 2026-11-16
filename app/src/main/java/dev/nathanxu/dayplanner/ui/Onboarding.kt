@@ -152,7 +152,7 @@ fun Onboarding(
                             "Problem sheet fri 2h #study" to "Friday, 2 hours, tag study",
                             "Gym 18:30 tmr" to "tomorrow at 18:30",
                             "Essay 3h by fri !high" to "due Friday, high priority — the planner picks when",
-                            "LeetCode x5 @week" to "a weekly goal, broken into daily to-dos",
+                            "LeetCode x5 @week" to "a goal: 5 a week, counting to-dos linked with ^leetcode",
                         ).forEach { (ex, what) ->
                             Text(ex, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(top = 8.dp))
                             Text(what, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -125,7 +125,9 @@ fun TodayScreen(
         t.plannedEvents.orEmpty().split(',').mapNotNull { it.trim().toLongOrNull() } + listOfNotNull(t.routineId?.let { routineEvents[it] })
     }.toSet()
     val rows = plan?.takeIf { it.calendarConnected }?.let { p ->
-        TodayView.merge(p.items, timed, { it.time!! }, { it.minutes }, today, hidden)
+        // Travel isn't in use yet: without travel times its rows are just noise.
+        val items = if (p.travelEnabled) p.items else p.items.filterNot { it is TimelineItem.Travel }
+        TodayView.merge(items, timed, { it.time!! }, { it.minutes }, today, hidden)
     } ?: timed.sortedBy { it.time }.map { DayRow.Todo(it, it.time!!) }
     val next = TodayView.nextUp(
         plan?.items.orEmpty().filterIsInstance<TimelineItem.Event>().map { it.event }.filter { it.id !in hidden },
@@ -172,7 +174,7 @@ fun TodayScreen(
         item { SectionHeader("Today") }
         if (loading && plan == null) item { LinearProgressIndicator(modifier = Modifier.fillMaxWidth()) }
         if (plan != null && !plan.calendarConnected) item {
-            Banner("See your Google Calendar here, with travel time between places.", "Connect", MaterialTheme.colorScheme.surfaceVariant, onConnectCalendar)
+            Banner("See your Google Calendar here, mixed in with your to-dos.", "Connect", MaterialTheme.colorScheme.surfaceVariant, onConnectCalendar)
         }
         if (rows.isEmpty() && plan?.calendarConnected == true) item {
             Text("Nothing at a set time today.", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
@@ -268,10 +270,19 @@ fun TodayScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                goals.take(8).forEach { gp ->
+                // Behind first, in red: the strip is where a goal asks for attention (it never adds to-dos).
+                goals.sortedByDescending { it.status.needsAttention }.take(8).forEach { gp ->
+                    val st = gp.status
+                    val warn = st.needsAttention
                     AssistChip(
                         onClick = onOpenGoals,
-                        label = { Text("${gp.goal.title} ${gp.status.percent}%", maxLines = 1) },
+                        label = {
+                            Text(
+                                gp.goal.title + if (st.target > 0) " ${st.done}/${st.target}" else "",
+                                maxLines = 1,
+                                color = if (warn) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                            )
+                        },
                         leadingIcon = { TagDot(Tags.find(gp.goal.category, tags).color, 8.dp) },
                     )
                 }
@@ -465,12 +476,11 @@ val SYNTAX_ROWS = listOf(
     "18:30 / 6pm" to "time",
     "45m / 1h30" to "duration",
     "#study #gym #piano" to "tag (a new name creates a new tag)",
-    "^leetcode" to "counts towards a goal",
-    "@week / @month" to "make it a goal for this week/month",
-    "x5" to "how many times in total",
+    "^leetcode / ^quant" to "counts towards a goal (by its name or tag); works on repeating ones too",
+    "x3 @week / x8 @month" to "a goal: that many every week / month",
+    "x15 by 30/11" to "a goal: that many in total by then",
     "daily / weekdays / every mon,wed" to "repeats (a repeating to-do)",
     "every 2 weeks tue / every 3 days / monthly" to "other repeats",
-    "!r" to "goal: start again when it ends",
     "!high / !low  (or !! / !1 / !3)" to "priority",
     "by fri / due 14/11" to "deadline (with no date, the planner picks a day before it)",
     "14/11" to "a date (day/month)",
@@ -492,7 +502,7 @@ fun SyntaxCard() {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "e.g. “LeetCode mediums x5 @week !r”, then “Two-sum tmr 30m ^leetcode”",
+                "e.g. goal “LeetCode x5 @week”, then “LeetCode 45m daily ^leetcode” or “Two-sum tmr 30m ^leetcode”",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

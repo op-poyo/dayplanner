@@ -1,4 +1,28 @@
-# Test plan: v1.6.1 → v1.10
+# Test plan: v1.6.1 → v1.12
+
+## v1.12 goals rebuild (15 min) — do this first
+
+Update over your current install (don't uninstall), so the database upgrade runs on your data.
+
+| # | Do | Expect |
+|---|---|---|
+| G1 | Open Goals after updating | Old `!r` weekly/monthly goals are one goal each ("5 a week"); no copies; nothing crashed |
+| G2 | Today's Anytime list | No auto-made goal to-dos ("LeetCode ×2") any more |
+| G3 | Type `Run x3 @week #run` | "Goal added: Run · 3 a week"; adds **no** to-do |
+| G4 | Type `Run 30m tmr ^run`, tick it tomorrow | Goal card: "1 of 3 this week · … · on pace" |
+| G5 | On the Run card tap **Log one** | Count goes up; Undo in the snackbar takes it back |
+| G6 | **+ To-do** on the card | A linked to-do for today; *Planned 1* on the card; its day menu moves it (Today / Tomorrow / Pick a day / No day) |
+| G7 | Edit a repeating to-do → *Counts towards* → Run → Save | Card shows "Counts: …"; ticking today's one counts |
+| G8 | New goal → Checklist, add 3 steps, tick one | "1 of 3 steps"; ring 1/3 |
+| G9 | New goal → Count, 6, *in total*, deadline in 2 weeks | Preview "6 by …"; card "0 of 6 by …" |
+| G10 | Leave a weekly goal at 0 until Thursday | Card red "… behind"; Today's strip chip red and first |
+| G11 | Plan my day with that goal behind | A row marked "suggested: goal is behind", unticked; tick + Accept creates a linked to-do |
+| G12 | Monday after a week | Same card, count back to 0, bar for last week shows its total |
+| G13 | Today with a calendar connected | No travel rows |
+| G14 | Settings → Backup → back up, then restore | Repeating to-dos keep their goal link |
+
+---
+
 
 ## v1.10 reorganisation (10 min)
 

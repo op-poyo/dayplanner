@@ -366,7 +366,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _planner.value = null
                 return@launch
             }
-            _planner.value = _planner.value?.copy(preview = preview, busy = false)
+            // Suggested sessions start unticked: the plan suggests, you decide.
+            _planner.value = _planner.value?.copy(preview = preview, busy = false, excluded = preview.suggested.keys)
         }
     }
 
@@ -381,7 +382,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _planner.value = null
         viewModelScope.launch {
             val plan = preview.plan.copy(blocks = preview.plan.blocks.filter { it.itemId !in s.excluded })
-            val (msg, undo) = repo.acceptPlan(plan, addToCalendar)
+            val (msg, undo) = repo.acceptPlan(plan, addToCalendar, preview.suggested)
             offerUndo(msg) { repo.undoPlan(undo) }
             loadCalendarRange()
             _plan.value = runCatching { repo.todayPlan() }.getOrNull()
@@ -563,15 +564,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- goals ----------
 
-    fun logGoal(goal: Goal) = viewModelScope.launch { repo.logGoal(goal, _today.value) }
-    fun unlogGoal(goal: Goal) = viewModelScope.launch {
-        repo.unlogGoal(goal, _today.value).takeIf { it.isNotEmpty() }?.let { _messages.emit(it) }
+    /** "Log one": a done session for today, with Undo instead of a −1 button. */
+    fun logGoal(goal: Goal) = viewModelScope.launch {
+        val t = repo.logGoal(goal, _today.value)
+        offerUndo("Logged “${goal.title}”") { repo.deleteTask(t.id) }
     }
+    fun addTodoForGoal(goal: Goal) = viewModelScope.launch { _messages.emit(repo.addTodoForGoal(goal, _today.value)) }
+    /** Give a goal's step a day (null = no day). */
+    fun scheduleTask(task: Task, date: LocalDate?) = viewModelScope.launch { repo.scheduleTask(task.id, date) }
     fun extendGoal(goal: Goal, newEnd: LocalDate) = viewModelScope.launch {
         _messages.emit(repo.extendGoal(goal, newEnd, _today.value))
     }
-    fun setRecurring(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setRecurring(goal, on) }
-    fun setSplit(goal: Goal, on: Boolean) = viewModelScope.launch { repo.setSplit(goal, on, _today.value) }
     fun updateGoal(goal: Goal) = viewModelScope.launch {
         repo.updateGoal(goal, _today.value)
         _messages.emit("Saved “${goal.title}”")
@@ -587,8 +590,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteGoal(goal: Goal) = viewModelScope.launch {
-        repo.deleteGoal(goal)
-        offerUndo("Deleted “${goal.title}”") { repo.restoreGoal(goal, _today.value) }
+        val relink = repo.deleteGoal(goal)
+        offerUndo("Deleted “${goal.title}”") { repo.restoreGoal(goal, relink) }
     }
     fun createPlan(draft: PlanDraft) = viewModelScope.launch {
         _messages.emit(repo.createPlan(draft, _today.value))

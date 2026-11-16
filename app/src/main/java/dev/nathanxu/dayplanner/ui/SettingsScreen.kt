@@ -112,7 +112,7 @@ fun SettingsScreen(
 /** Settings sections: title and what's in it. The index page shows these with a live summary. */
 val SETTINGS_SECTIONS = listOf(
     "Calendars" to "Accounts, which calendars show, sync",
-    "Travel" to "Home, how you travel, buffer",
+    "Travel" to "Later stage: home, how you travel, buffer",
     "Planning & alerts" to "Planning hours, protected time, places, reminders, review",
     "Tags" to "Names and colours",
     "Backup" to "Save or restore everything",
@@ -757,9 +757,10 @@ private fun SyntaxTab() {
                 "Problem sheet 4 fri 1h30 #study" to "To-do on Friday, 90 min, Study",
                 "Buy milk 6pm #shop" to "To-do today at 18:00",
                 "Read Hull ch.3 someday" to "Undated to-do that stays on your list",
-                "LeetCode x5 @week !r #quant" to "5 this week, split into daily to-dos, repeats weekly",
+                "LeetCode x5 @week #quant" to "Goal: 5 every week. It adds no to-dos; it counts the ones linked to it",
+                "LeetCode 45m weekdays ^leetcode" to "Repeating to-do whose ticks count towards LeetCode",
                 "Two-sum tmr 30m ^leetcode" to "To-do tomorrow that counts towards LeetCode",
-                "Report @month" to "One thing this month; add steps on its card for a %",
+                "Mock interviews x6 by 20/12" to "Goal: 6 in total by 20 Dec (New goal → Checklist for named steps)",
             ).forEach { (ex, what) ->
                 Column(Modifier.padding(vertical = 6.dp)) {
                     Text(ex, fontWeight = FontWeight.Medium)

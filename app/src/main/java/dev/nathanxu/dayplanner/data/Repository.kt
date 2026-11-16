@@ -15,7 +15,11 @@ import dev.nathanxu.dayplanner.domain.Clashes
 import dev.nathanxu.dayplanner.domain.DayPlan
 import dev.nathanxu.dayplanner.domain.Days
 import dev.nathanxu.dayplanner.domain.GoalDraft
-import dev.nathanxu.dayplanner.domain.GoalStatus
+import dev.nathanxu.dayplanner.domain.GoalMath
+import dev.nathanxu.dayplanner.domain.GoalKind
+import dev.nathanxu.dayplanner.domain.PlanItem
+import dev.nathanxu.dayplanner.domain.GoalState
+import dev.nathanxu.dayplanner.domain.Linked
 import dev.nathanxu.dayplanner.domain.Pacing
 import dev.nathanxu.dayplanner.domain.Period
 import dev.nathanxu.dayplanner.domain.QuickAdd
@@ -67,7 +71,11 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 import java.time.temporal.TemporalAdjusters
 
-data class GoalProgress(val goal: Goal, val status: GoalStatus, val steps: List<Task>)
+/**
+ * A goal with its progress. [steps] are its linked one-off to-dos (open first): a checklist's
+ * steps, or a count goal's planned sessions. [routines] are repeating to-dos counting towards it.
+ */
+data class GoalProgress(val goal: Goal, val status: GoalState, val steps: List<Task>, val routines: List<Routine> = emptyList())
 
 data class TodayPlan(
     val items: List<TimelineItem>,
@@ -86,14 +94,13 @@ data class PlanDraft(
     val title: String,
     val tag: String,
     val start: LocalDate,
+    /** Inclusive; [Pacing.ONGOING_END] = no end. */
     val end: LocalDate,
-    /** Only used for single-day plans, which become an ordinary timed task. */
-    val startTime: LocalTime?,
-    val endTime: LocalTime?,
-    /** 1 = done once / tracked by steps; >1 = a count that gets broken down. */
+    /** A checklist goal (progress = its steps) rather than a count. */
+    val checklist: Boolean,
+    /** How many, per [per] (or in total when [per] is null). */
     val target: Int,
-    val cadence: Cadence,
-    val recurring: Boolean,
+    val per: Cadence?,
     /** Stored priority (see [Priority.store]). */
     val priority: String? = null,
 )
@@ -126,67 +133,40 @@ class Repository(
     /** Current and upcoming plans (not finished ones), with % / pace / today's share and steps. */
     fun observeGoals(today: LocalDate): Flow<List<GoalProgress>> = combine(
         db.goals().observeActive(),
-        db.tasks().observeGoalStats(today),
-        db.tasks().observeSteps(),
-        db.tasks().observeDoneByDay(),
-    ) { goals, stats, steps, byDay ->
-        val statsBy = stats.associateBy { it.goalId }
-        val stepsBy = steps.groupBy { it.goalId }
-        val daysBy = byDay.groupBy { it.goalId }
-        goals.filter { !it.end.isBefore(today) }.map { g ->
-            val s = statsBy[g.id]
-            val status = if (g.isOngoing) {
-                val cadence = g.effectiveCadence.let { if (it == Cadence.NONE) Cadence.DAILY else it }
-                val from = Pacing.bucketStart(cadence, g.start, today)
-                val inBucket = daysBy[g.id].orEmpty().filter { !it.date.isBefore(from) && !it.date.isAfter(today) }.sumOf { it.units }
-                GoalStatus.ongoing(g.target, inBucket, s?.todayUnits ?: 0, s?.todayDoneUnits ?: 0)
-            } else {
-                GoalStatus.of(
-                    target = g.target, start = g.start, end = g.end, today = today,
-                    doneUnits = s?.doneUnits ?: 0, stepTotal = s?.stepTotal ?: 0, stepDone = s?.stepDone ?: 0,
-                    todayUnits = s?.todayUnits ?: 0, todayDoneUnits = s?.todayDoneUnits ?: 0,
+        db.tasks().observeLinked(),
+        db.routines().observeAll(),
+    ) { goals, linked, routines -> goals.filter { !it.end.isBefore(today) }.map { progressOf(it, linked, routines, today) } }
+
+    private val zone get() = java.time.ZoneId.systemDefault()
+
+    private fun progressOf(g: Goal, linked: List<Task>, routines: List<Routine>, today: LocalDate): GoalProgress {
+        val mine = linked.filter { it.goalId == g.id }
+        val state = GoalMath.state(
+            g.spec,
+            mine.map { t ->
+                Linked(
+                    done = t.done,
+                    on = if (t.done) t.doneAt?.let { java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalDate() } ?: t.date else t.date,
+                    units = t.units.coerceAtLeast(1),
+                    repeating = t.routineId != null,
                 )
-            }
-            GoalProgress(goal = g, status = status, steps = stepsBy[g.id].orEmpty())
-        }
+            },
+            today,
+        )
+        val steps = mine.filter { it.routineId == null }
+            .sortedWith(compareBy({ it.done }, { it.date == null }, { it.date }, { -(it.doneAt ?: 0) }, { it.id }))
+        return GoalProgress(g, state, steps, routines.filter { it.goalId == g.id })
     }
 
     suspend fun todayTasks(today: LocalDate): List<Task> = db.tasks().today(today)
 
     fun observeAllTodos(sinceMillis: Long): Flow<List<Task>> = db.tasks().observeAllTodos(sinceMillis)
 
-    /** Finished one-off plans with their final status, newest first. */
+    /** Finished goals with their final progress, newest first. */
     fun observeFinished(today: LocalDate): Flow<List<GoalProgress>> = combine(
         db.goals().observeFinished(),
-        db.tasks().observeGoalStats(today),
-        db.tasks().observeSteps(),
-    ) { goals, stats, steps ->
-        val statsBy = stats.associateBy { it.goalId }
-        val stepsBy = steps.groupBy { it.goalId }
-        goals.map { g ->
-            val s = statsBy[g.id]
-            GoalProgress(
-                goal = g,
-                status = GoalStatus.of(
-                    target = g.target, start = g.start, end = g.end, today = g.end,
-                    doneUnits = s?.doneUnits ?: 0, stepTotal = s?.stepTotal ?: 0, stepDone = s?.stepDone ?: 0,
-                    todayUnits = 0, todayDoneUnits = 0,
-                ),
-                steps = stepsBy[g.id].orEmpty(),
-            )
-        }
-    }
-
-    // ---------- tags ----------
-
-    /** Tag key for "#raw" (created if new), or Other. Second value: whether it was created. */
-    private fun tagFor(raw: String?): Pair<String, Tag?> {
-        if (raw == null) return Tags.OTHER to null
-        val (tag, created) = tags.resolveOrCreate(raw)
-        return tag.key to if (created) tag else null
-    }
-
-    // ---------- accounts / calendars ----------
+        db.tasks().observeLinked(),
+    ) { goals, linked -> goals.map { progressOf(it, linked, emptyList(), it.end) } }
 
     suspend fun calendars(): List<CalInfo> = calendar.calendars()
 
@@ -268,79 +248,27 @@ class Repository(
 
     /**
      * Idempotent, run on app open, widget refresh and after edits:
-     * clears yesterday's unticked generated to-dos, finishes/renews plans, creates today's
-     * routine to-dos and each plan's paced share for the current breakdown bucket.
+     * clears yesterday's unticked repeating to-dos, moves goals past their end to Finished, and
+     * makes today's to-do for each repeating to-do. Goals never make to-dos.
      */
     suspend fun ensureFor(date: LocalDate) = housekeeping.withLock {
         val tasks = db.tasks()
         val goals = db.goals()
         tasks.deleteStaleGenerated("r:", date)
-        tasks.deleteStaleGenerated("g:", date)
 
         for (g in goals.active()) {
-            if (!g.end.isBefore(date)) continue
-            tasks.deleteOpenSplits(g.id)
-            goals.update(g.copy(archived = true))
-            if (g.recurring) goals.insert(renewed(g, date))
+            if (g.end.isBefore(date)) goals.update(g.copy(archived = true))
         }
-
-        for (g in goals.active()) syncSplit(g, date)
 
         for (r in db.routines().active()) {
             if (r.repeat.occursOn(date)) {
                 tasks.insertIgnore(
                     Task(
                         title = r.title, date = date, category = r.category, minutes = r.minutes,
-                        time = r.time, routineId = r.id, genKey = GenKeys.routine(r.id, date),
+                        time = r.time, routineId = r.id, genKey = GenKeys.routine(r.id, date), goalId = r.goalId,
                     )
                 )
             }
-        }
-    }
-
-    /**
-     * Keeps today's to-do for a plan equal to what's actually still left today: created, resized
-     * or removed after every change (+1, −1, ticks, edits). Because it's recalculated rather than
-     * nudged up and down, spamming +1/−1 can't inflate it.
-     */
-    private suspend fun syncSplit(g: Goal, date: LocalDate) {
-        val tasks = db.tasks()
-        val key = GenKeys.split(g.id, date)
-        val existing = tasks.byKey(key)
-        // Ticked, or deleted (skipped) today: leave it alone.
-        if (existing?.done == true || existing?.skipped == true) return
-        val cadence = g.effectiveCadence.let { if (g.isOngoing && it == Cadence.NONE) Cadence.DAILY else it }
-        val wanted = cadence != Cadence.NONE && g.isActiveOn(date) && (g.isOngoing || g.target > 1)
-        val remaining = if (!wanted) 0 else Pacing.remainingToday(
-            target = g.target, start = g.start, end = g.end, cadence = cadence, today = date,
-            doneBeforeToday = tasks.doneUnitsBefore(g.id, date),
-            doneToday = tasks.doneUnitsOn(g.id, date, key),
-            doneInBucket = tasks.doneUnitsBetween(g.id, Pacing.bucketStart(cadence, g.start, date), date.plusDays(1)),
-        )
-        when {
-            remaining <= 0 -> existing?.let { tasks.delete(it.id) }
-            existing == null -> tasks.insertIgnore(
-                Task(
-                    title = g.title, date = date, category = g.category, goalId = g.id,
-                    units = remaining, genKey = key,
-                )
-            )
-            existing.units != remaining || existing.title != g.title -> tasks.update(existing.copy(units = remaining, title = g.title))
-        }
-    }
-
-    private suspend fun syncSplit(goalId: Long, date: LocalDate) {
-        db.goals().get(goalId)?.let { syncSplit(it, date) }
-    }
-
-    /** Next instance of a repeating plan, covering [date]. */
-    private fun renewed(g: Goal, date: LocalDate): Goal = when (g.period) {
-        Period.WEEK, Period.MONTH -> g.copy(id = 0, periodStart = g.period.startOf(date), endDate = null, archived = false)
-        Period.CUSTOM -> {
-            val len = ChronoUnit.DAYS.between(g.start, g.end) + 1
-            var start = g.end.plusDays(1)
-            while (start.plusDays(len - 1).isBefore(date)) start = start.plusDays(len)
-            g.copy(id = 0, periodStart = start, endDate = start.plusDays(len - 1), archived = false)
         }
     }
 
@@ -352,22 +280,20 @@ class Repository(
             null -> "Nothing to add — type a title"
             is TaskDraft -> {
                 // "every mon,wed", "daily"…: a repeating to-do.
+                val goal = p.goalHint?.let { matchGoal(it, today) }
                 p.repeat?.let { rep ->
                     val (tagKey, newTag) = tagFor(p.tag)
                     val msg = createRoutine(
                         Routine(
-                            title = p.title, category = tagKey, minutes = p.minutes, time = p.time,
+                            title = p.title, category = if (p.tag == null && goal != null) goal.category else tagKey,
+                            minutes = p.minutes, time = p.time,
                             syncToCalendar = p.time != null, remind = p.time != null && settings.current.reminderLead != null,
-                            daysMask = rep.daysMask,
+                            daysMask = rep.daysMask, goalId = goal?.id,
                         ).withRepeat(rep),
                         today,
                     )
-                    return msg + (newTag?.let { " · new tag ${it.name}" } ?: "")
-                }
-                val goal = p.goalHint?.let { hint ->
-                    db.goals().active()
-                        .filter { it.isActiveOn(today) }
-                        .firstOrNull { it.title.lowercase().contains(hint) }
+                    return msg + (goal?.let { " → ${it.title}" } ?: if (p.goalHint != null) " (no goal matched ^${p.goalHint})" else "") +
+                        (newTag?.let { " · new tag ${it.name}" } ?: "")
                 }
                 val newTag = insertDraft(p, goal)
                 buildString {
@@ -383,56 +309,56 @@ class Repository(
             }
             is GoalDraft -> {
                 val (tagKey, newTag) = tagFor(p.tag)
-                db.goals().insert(
-                    Goal(
-                        title = p.title, period = p.period, periodStart = p.period.startOf(today),
-                        target = p.target, recurring = p.recurring, category = tagKey,
-                    )
+                // "x3 @week" = 3 every week from now on; "x15 by 30/11" = 15 in total by then.
+                val per = when (p.period) {
+                    Period.WEEK -> Cadence.WEEKLY
+                    Period.MONTH -> Cadence.MONTHLY
+                    Period.CUSTOM -> null
+                }
+                val g = Goal(
+                    title = p.title, period = Period.CUSTOM, periodStart = today,
+                    endDate = p.end ?: Pacing.ONGOING_END, target = p.target.coerceAtLeast(1),
+                    category = tagKey, cadence = per, split = false,
                 )
-                ensureFor(today)
+                db.goals().insert(g)
                 changed()
-                val split = if (p.target > 1) ", split into daily to-dos" else ""
-                "Goal added: ${p.title} ×${p.target} ${p.period.label.lowercase()}$split" +
-                    (if (p.recurring) " ↻" else "") + (newTag?.let { " · new tag ${it.name}" } ?: "")
+                "Goal added: ${p.title} · ${GoalMath.describe(g.spec)}" + (newTag?.let { " · new tag ${it.name}" } ?: "")
             }
         }
     }
 
-    /** From the "New plan" form. A single-day plan with a count of 1 is just a task. */
+    /**
+     * A live goal for "^hint": title containing it, or its tag. Nearest-ending first, so a
+     * this-month goal beats an ongoing one with a similar name.
+     */
+    private suspend fun matchGoal(hint: String, today: LocalDate): Goal? {
+        val h = hint.lowercase()
+        val tagKeys = tags.current.filter { it.name.equals(h, ignoreCase = true) || it.key.equals(h, ignoreCase = true) }.map { it.key }.toSet()
+        return db.goals().active()
+            .filter { !it.end.isBefore(today) && (it.title.lowercase().contains(h) || it.category in tagKeys) }
+            .minWithOrNull(compareBy({ !it.title.lowercase().contains(h) }, { it.end }))
+    }
+
+    /** From the goal form. */
     suspend fun createPlan(d: PlanDraft, today: LocalDate): String {
         if (d.title.isBlank()) return "Give it a title"
         if (d.end.isBefore(d.start)) return "End date is before the start"
-        if (d.start == d.end && d.target <= 1) {
-            val minutes = if (d.startTime != null && d.endTime != null && d.endTime.isAfter(d.startTime)) {
-                Duration.between(d.startTime, d.endTime).toMinutes().toInt()
-            } else null
-            db.tasks().insert(
-                Task(title = d.title.trim(), date = d.start, time = d.startTime, minutes = minutes, category = d.tag, priority = d.priority)
-            )
-            changed()
-            return "Added “${d.title.trim()}” · " + if (d.start == today) "today" else dayFmt.format(d.start)
-        }
-        db.goals().insert(
-            Goal(
-                title = d.title.trim(), period = Period.CUSTOM, periodStart = d.start, endDate = d.end,
-                target = d.target.coerceAtLeast(1), recurring = d.recurring, category = d.tag, priority = d.priority,
-                // An ongoing task always breaks down (that's what "3 a week, forever" means).
-                cadence = if (Pacing.isOngoing(d.end) && d.cadence == Cadence.NONE) Cadence.DAILY else d.cadence,
-                split = Pacing.isOngoing(d.end) || d.cadence != Cadence.NONE,
-            )
+        val g = Goal(
+            title = d.title.trim(), period = Period.CUSTOM, periodStart = d.start, endDate = d.end,
+            target = if (d.checklist) 1 else d.target.coerceAtLeast(1), category = d.tag, priority = d.priority,
+            cadence = if (d.checklist) null else d.per, split = false,
         )
-        ensureFor(today)
+        db.goals().insert(g)
         changed()
-        val range = if (Pacing.isOngoing(d.end)) "ongoing from ${dayFmt.format(d.start)}"
-        else "${dayFmt.format(d.start)} – ${dayFmt.format(d.end)}"
-        val breakdown = if (d.target > 1 && d.cadence != Cadence.NONE) " · ${d.cadence.label.lowercase()} to-dos" else ""
-        return "Goal added: ${d.title.trim()} · $range$breakdown"
+        return "Goal added: ${g.title} · ${GoalMath.describe(g.spec)}"
     }
 
-    /** Adds a step to a plan from its card. */
+    /** Adds a step (a linked to-do, no date unless typed) from a goal's card. */
     suspend fun addStep(goal: Goal, text: String, today: LocalDate): String {
         val p = QuickAdd.parse(text, today) as? TaskDraft ?: return "Steps need a title (no @week/@month)"
-        insertDraft(p, goal)
+        // A step has no day until you give it one (typing "fri" still sets it).
+        val typedDate = Regex("\\s").split(text.trim()).drop(1).any { w -> w.lowercase() in setOf("today", "tod", "tmr", "tmrw", "tomorrow") || QuickAdd.parseDate(w, today) != null }
+        insertDraft(if (typedDate) p else p.copy(date = null), goal)
         return "Step added to ${goal.title}"
     }
 
@@ -484,34 +410,20 @@ class Repository(
         changed()
     }
 
-    /**
-     * Checkbox on a task. A plan's to-do worth several units (e.g. "LeetCode ×3 this week") ticks
-     * off one unit at a time: each tap logs 1 towards the plan and the to-do shrinks to ×2.
-     */
+    /** Checkbox on a to-do. */
     suspend fun toggle(id: Long) {
         val t = db.tasks().get(id) ?: return
-        if (!t.done && t.units > 1 && t.goalId != null && t.genKey?.startsWith("g:") == true) {
-            db.tasks().insert(
-                Task(
-                    title = t.title, date = t.date, category = t.category, goalId = t.goalId,
-                    genKey = GenKeys.log(t.goalId), done = true, doneAt = System.currentTimeMillis(),
-                )
-            )
-            t.date?.let { syncSplit(t.goalId, it) }
-            changed()
-            return
-        }
         setDone(id, !t.done)
     }
 
     /**
-     * Deletes a to-do. One made by a routine or a long-term task's breakdown is skipped instead
+     * Deletes a to-do. One made by a repeating to-do is skipped instead
      * (kept hidden for that day), so it isn't made again on the next refresh. Returns true if skipped.
      */
     suspend fun deleteTask(id: Long): Boolean {
         val t = db.tasks().get(id) ?: return false
         t.plannedEvents?.let { deletePlannedEvents(it, futureOnly = true) }
-        val generated = t.genKey?.let { it.startsWith("r:") || it.startsWith("g:") } == true
+        val generated = t.genKey?.startsWith("r:") == true
         if (generated) db.tasks().update(t.copy(skipped = true, done = false, doneAt = null))
         else db.tasks().delete(id)
         changed()
@@ -540,81 +452,72 @@ class Repository(
 
     // ---------- goals / plans ----------
 
-    /** "+1": logs a done unit against the plan for today. */
-    suspend fun logGoal(goal: Goal, today: LocalDate) {
-        db.tasks().insert(
-            Task(
-                title = goal.title, date = today, category = goal.category, goalId = goal.id,
-                genKey = GenKeys.log(goal.id), done = true, doneAt = System.currentTimeMillis(),
-            )
+    /** "Log one": a done to-do for today, counting towards the goal (and in its history). Returns it, for Undo. */
+    suspend fun logGoal(goal: Goal, today: LocalDate): Task {
+        val t = Task(
+            title = goal.title, date = today, category = goal.category, goalId = goal.id,
+            minutes = typicalMinutes(goal), done = true, doneAt = System.currentTimeMillis(),
         )
-        syncSplit(goal.id, today)
+        val id = db.tasks().insert(t)
         changed()
+        return t.copy(id = id)
     }
 
-    /**
-     * "−1": takes back the most recent unit of progress. A +1 log is removed (and if it came from
-     * partly ticking today's ×n to-do, that to-do gets its unit back); a ticked to-do or step is
-     * unticked.
-     */
-    suspend fun unlogGoal(goal: Goal, today: LocalDate): String {
-        val t = db.tasks().latestDoneForGoal(goal.id) ?: return "Nothing to take back on ${goal.title}"
-        if (t.genKey?.startsWith("l:") == true) db.tasks().delete(t.id)
-        else db.tasks().setDone(t.id, false, null)
-        syncSplit(goal.id, today)
+    /** "+ To-do": an open to-do for today, linked to the goal. */
+    suspend fun addTodoForGoal(goal: Goal, today: LocalDate): String {
+        db.tasks().insert(
+            Task(title = goal.title, date = today, category = goal.category, goalId = goal.id, minutes = typicalMinutes(goal), priority = goal.priority)
+        )
         changed()
-        return ""
+        return "Added “${goal.title}” for today"
     }
 
-    /** Saves an edited plan; today's to-do is recalculated whenever anything it depends on changed. */
+    /** Length of the goal's most recent session, so new ones match. */
+    private suspend fun typicalMinutes(goal: Goal): Int? =
+        db.tasks().latestLinked(goal.id)?.minutes
+
+    /** Gives a step (or any to-do) a day, keeping everything else. */
+    suspend fun scheduleTask(id: Long, date: LocalDate?) {
+        val t = db.tasks().get(id) ?: return
+        updateTask(t.copy(date = date, time = if (date == null) null else t.time))
+    }
+
     suspend fun updateGoal(goal: Goal, today: LocalDate) {
-        val old = db.goals().get(goal.id)
-        val fixed = goal.copy(target = goal.target.coerceAtLeast(1))
-        db.goals().update(fixed)
-        if (old == null || old.target != fixed.target || old.split != fixed.split || old.title != fixed.title ||
-            old.start != fixed.start || old.end != fixed.end || old.effectiveCadence != fixed.effectiveCadence ||
-            old.category != fixed.category
-        ) {
-            db.tasks().deleteOpenSplits(goal.id)
-            ensureFor(today)
-        }
+        db.goals().update(goal.copy(target = goal.target.coerceAtLeast(1)))
         changed()
     }
 
-    /** Moves a plan's end date (and brings a finished one back). Today's to-do is re-paced. */
+    /** Moves a goal's end date (and brings a finished one back). */
     suspend fun extendGoal(goal: Goal, newEnd: LocalDate, today: LocalDate): String {
         if (newEnd.isBefore(goal.start)) return "End can't be before the start"
         db.goals().update(goal.copy(endDate = newEnd, period = Period.CUSTOM, archived = newEnd.isBefore(today)))
-        db.tasks().deleteOpenSplits(goal.id)
-        ensureFor(today)
         changed()
         return "${goal.title} now runs to ${dayFmt.format(newEnd)}"
     }
 
-    suspend fun restoreGoal(goal: Goal, today: LocalDate) {
+    /** Puts back a deleted goal, relinking the repeating to-dos that counted towards it. */
+    suspend fun restoreGoal(goal: Goal, routineIds: List<Long> = emptyList()) {
         db.goals().insert(goal)
-        ensureFor(today)
+        db.routines().all().filter { it.id in routineIds }.forEach { db.routines().update(it.copy(goalId = goal.id)) }
         changed()
     }
 
-    suspend fun setRecurring(goal: Goal, recurring: Boolean) = db.goals().update(goal.copy(recurring = recurring))
-
-    suspend fun setSplit(goal: Goal, split: Boolean, today: LocalDate) = updateGoal(goal.copy(split = split), today)
-
-    suspend fun deleteGoal(goal: Goal) {
-        db.tasks().deleteOpenSplits(goal.id)
+    /** Deletes a goal. Its to-dos stay (unlinked from nothing: they just stop counting). Returns the repeating ones it unlinked. */
+    suspend fun deleteGoal(goal: Goal): List<Long> {
+        val linked = db.routines().all().filter { it.goalId == goal.id }
+        linked.forEach { db.routines().update(it.copy(goalId = null)) }
         db.goals().delete(goal)
         changed()
+        return linked.map { it.id }
     }
 
-    /** Ends a long-term task today: it moves to Finished (with its progress) and stops making to-dos. */
+    /** Ends a goal today: it moves to Finished with its progress. */
     suspend fun finishGoal(goal: Goal, today: LocalDate) {
-        db.tasks().deleteOpenSplits(goal.id)
         db.goals().update(goal.copy(archived = true, recurring = false, endDate = maxOf(today, goal.periodStart), period = Period.CUSTOM))
         changed()
     }
 
-    /** Deletes every finished long-term task; returns them for Undo. */
+    /** Deletes every finished goal; returns them for Undo. */
     suspend fun clearFinished(): List<Goal> {
         val gone = db.goals().all().filter { it.archived && !it.recurring }
         gone.forEach { db.goals().delete(it) }
@@ -695,6 +598,7 @@ class Repository(
             next = next.copy(calendarEventId = null)
         }
         db.routines().update(next)
+        if (old.goalId != r.goalId) db.tasks().relinkRoutine(r.id, r.goalId)
         db.tasks().deleteOpenByKey(GenKeys.routine(r.id, today))
         ensureFor(today)
         val status = syncRoutines()
@@ -877,10 +781,12 @@ class Repository(
         val notes: List<String>,
         /** Where blocks would go, or null if they can't be written (with why in [notes]). */
         val calendarName: String?,
+        /** Suggested sessions for goals that are behind: plan item id → its goal. Start unticked. */
+        val suggested: Map<Long, Goal> = emptyMap(),
     )
 
     /** What accepting changed, so Undo can put it back. */
-    data class PlanUndo(val before: List<Task>, val createdEvents: List<Long>)
+    data class PlanUndo(val before: List<Task>, val createdEvents: List<Long>, val createdTasks: List<Long> = emptyList())
 
     private fun candidateOf(t: Task, goalPriority: Map<Long, String?>, travelBefore: Int) = PlanCandidate(
         id = t.id, title = t.title, date = t.date, time = t.time, minutes = t.minutes,
@@ -947,31 +853,73 @@ class Repository(
             } else 0
             candidateOf(t, goalPriority, travelBefore)
         }
-        if (placesWithoutTravel > 0 && !travel.enabled) notes += "Travel times are off, so no time is kept for getting to places."
-        else if (placesWithoutTravel > 0 && s.home == null) notes += "Set Home in Settings to keep travel time before to-dos with a place."
+        // (Travel is out of stage 1: no note about it when it's off.)
+        if (travel.enabled && placesWithoutTravel > 0 && s.home == null) notes += "Set Home in Settings to keep travel time before to-dos with a place."
 
         val (items, taskBusy) = PlanInputs.select(candidates, days, now, includeSomeday, rules)
-        val plan = Scheduler.plan(items, days, eventBusy + routineBusy + taskBusy, s.protectedBlocks, rules, now)
+        val (suggestItems, suggested) = goalSuggestions(days, today, rules.defaultMinutes)
+        val raw = Scheduler.plan(items + suggestItems, days, eventBusy + routineBusy + taskBusy, s.protectedBlocks, rules, now)
+        // A suggestion that doesn't fit isn't worth a line under "Didn't fit".
+        val plan = raw.copy(unplaced = raw.unplaced.filter { it.itemId !in suggested })
 
         val cal = if (calendar.hasWritePermission()) routineCalendar(calendar.calendars()) else Result.failure(IllegalStateException("No calendar write access"))
         cal.exceptionOrNull()?.let { notes += "Blocks can't be added to Google Calendar: ${it.message}." }
-        return PlanPreview(plan, days, notes, cal.getOrNull()?.name)
+        return PlanPreview(plan, days, notes, cal.getOrNull()?.name, suggested)
+    }
+
+    /**
+     * Sessions for count goals that won't make their number this period otherwise: what's left,
+     * minus open linked to-dos already in the period and the linked repeating to-dos still to
+     * come, spread one a day over the plan's days in the period.
+     */
+    private suspend fun goalSuggestions(days: List<LocalDate>, today: LocalDate, defaultMinutes: Int): Pair<List<PlanItem>, Map<Long, Goal>> {
+        val linked = db.tasks().linked()
+        val routines = db.routines().all()
+        val items = mutableListOf<PlanItem>()
+        val byId = mutableMapOf<Long, Goal>()
+        for (g in db.goals().active().filter { it.kind == GoalKind.COUNT && !it.end.isBefore(today) && !it.start.isAfter(today) }) {
+            val p = progressOf(g, linked, routines, today)
+            val w = p.status.window ?: continue
+            val open = linked.count { it.goalId == g.id && !it.done && it.date != null && it.date in w.start..w.end && !it.date.isBefore(today) }
+            val coming = p.routines.filter { it.active }.sumOf { r ->
+                r.repeat.occurrences(today.plusDays(1), ChronoUnit.DAYS.between(today, w.end).toInt().coerceAtLeast(0)).size
+            }
+            val need = p.status.remaining - open - coming
+            if (need <= 0) continue
+            val minutes = typicalMinutes(g) ?: defaultMinutes
+            GoalMath.suggestionDays(need, days.filter { !it.isAfter(w.end) }).forEachIndexed { k, d ->
+                val id = -(g.id * 64 + k + 1)
+                byId[id] = g
+                items += PlanItem(id, g.title, minutes, Priority.of(g.priority), day = d, tag = g.category.takeIf { it != Tags.OTHER }, splittable = false)
+            }
+        }
+        return items to byId
     }
 
     /**
      * Gives each placed to-do its first block's date and time; with [addToCalendar], writes every
      * block to the routines calendar. A slipped to-do's future blocks are replaced.
      */
-    suspend fun acceptPlan(plan: Plan, addToCalendar: Boolean): Pair<String, PlanUndo> {
+    suspend fun acceptPlan(plan: Plan, addToCalendar: Boolean, suggested: Map<Long, Goal> = emptyMap()): Pair<String, PlanUndo> {
         val s = settings.current
         val cal = if (addToCalendar && calendar.hasWritePermission()) routineCalendar(calendar.calendars()).getOrNull() else null
         val before = mutableListOf<Task>()
         val created = mutableListOf<Long>()
+        val newTasks = mutableListOf<Long>()
         var failed = 0
         for ((id, blocks) in plan.blocks.groupBy { it.itemId }) {
-            val t = db.tasks().get(id) ?: continue
+            // A suggested session becomes a new to-do linked to its goal.
+            val goal = suggested[id]
+            val t = if (goal != null) {
+                val newId = db.tasks().insert(
+                    Task(title = goal.title, date = blocks.first().date, category = goal.category, goalId = goal.id,
+                        minutes = blocks.sumOf { it.minutes }, priority = goal.priority)
+                )
+                newTasks += newId
+                db.tasks().get(newId) ?: continue
+            } else db.tasks().get(id) ?: continue
             if (t.done) continue
-            before += t
+            if (goal == null) before += t
             t.plannedEvents?.let { deletePlannedEvents(it, futureOnly = true) }
             val ids = if (cal != null) blocks.mapNotNull { b ->
                 runCatching {
@@ -994,18 +942,20 @@ class Repository(
         }
         if (cal != null) calendar.requestSync(cal.accountName)
         changed()
-        val n = before.size
+        val n = before.size + newTasks.size
         val msg = buildString {
             append(if (n == 1) "Planned 1 to-do" else "Planned $n to-dos")
+            if (newTasks.isNotEmpty()) append(" (${newTasks.size} for goals)")
             if (cal != null && created.isNotEmpty()) append(" · added to ${cal.name}")
             if (failed > 0) append(" · $failed block(s) couldn't be added")
         }
-        return msg to PlanUndo(before, created)
+        return msg to PlanUndo(before, created, newTasks)
     }
 
     suspend fun undoPlan(undo: PlanUndo) {
         undo.createdEvents.forEach { calendar.deleteEvent(it) }
         undo.before.forEach { db.tasks().update(it) }
+        undo.createdTasks.forEach { db.tasks().delete(it) }
         changed()
     }
 

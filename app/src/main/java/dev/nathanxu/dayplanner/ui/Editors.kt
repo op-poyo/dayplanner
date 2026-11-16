@@ -46,7 +46,8 @@ import dev.nathanxu.dayplanner.data.PlanDraft
 import dev.nathanxu.dayplanner.data.Routine
 import dev.nathanxu.dayplanner.data.SavedPlace
 import dev.nathanxu.dayplanner.data.Task
-import dev.nathanxu.dayplanner.data.effectiveCadence
+import dev.nathanxu.dayplanner.data.kind
+import dev.nathanxu.dayplanner.data.per
 import dev.nathanxu.dayplanner.data.end
 import dev.nathanxu.dayplanner.data.start
 import dev.nathanxu.dayplanner.domain.Cadence
@@ -54,6 +55,9 @@ import dev.nathanxu.dayplanner.domain.Days
 import dev.nathanxu.dayplanner.domain.Pacing
 import dev.nathanxu.dayplanner.domain.Period
 import dev.nathanxu.dayplanner.domain.Priority
+import dev.nathanxu.dayplanner.domain.GoalKind
+import dev.nathanxu.dayplanner.domain.GoalMath
+import dev.nathanxu.dayplanner.domain.GoalSpec
 import dev.nathanxu.dayplanner.domain.Repeat
 import dev.nathanxu.dayplanner.data.repeat
 import dev.nathanxu.dayplanner.data.withRepeat
@@ -489,12 +493,14 @@ fun TaskEditor(
     }
 }
 
-// ---------- plan (long-term task) ----------
+// ---------- goal ----------
 
 /**
- * Create ([goal] == null) or edit a long-term task. Start defaults to today. A single-day task can
- * have start/end times and becomes an ordinary to-do; longer ones can be broken down into daily,
- * 3-day, weekly or monthly to-dos.
+ * Create ([goal] == null) or edit a goal. A goal never makes to-dos: it counts the to-dos linked
+ * to it. Two kinds:
+ * - Count: how many, per day / 3 days / week / month (from a start, with or without an end), or
+ *   in total by an end date.
+ * - Checklist: its steps, optionally by a deadline.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -503,41 +509,45 @@ fun PlanEditor(
     today: LocalDate,
     tagActions: TagActions,
     onCreate: (PlanDraft) -> Unit,
-    /** Prefill for a new task, from text typed into the quick-add line. */
+    /** Prefill for a new goal, from text typed into the quick-add line. */
     prefill: dev.nathanxu.dayplanner.domain.GoalDraft? = null,
     prefillTitle: String? = null,
     onSave: (Goal) -> Unit,
     onDelete: (Goal) -> Unit,
     onDismiss: () -> Unit,
-    /** Ends it today, keeping its progress (shown for active tasks being edited). */
+    /** Ends it today, keeping its progress (shown for active goals being edited). */
     onFinish: ((Goal) -> Unit)? = null,
 ) {
     val key = goal?.id ?: -1L
     var title by remember(key) { mutableStateOf(goal?.title ?: prefill?.title ?: prefillTitle ?: "") }
     var tag by remember(key) { mutableStateOf(goal?.category ?: Tags.OTHER) }
-    // "@week"/"@month" typed before expanding sets the range to this week/month.
-    val prefillEnd = prefill?.period?.let { p -> p.lastDay(p.startOf(today)) }
-    var start by remember(key) { mutableStateOf(goal?.start ?: today) }
-    var noEnd by remember(key) { mutableStateOf(goal?.let { Pacing.isOngoing(it.end) } ?: false) }
-    var end by remember(key) {
-        mutableStateOf(goal?.end?.takeIf { !Pacing.isOngoing(it) } ?: prefillEnd ?: today.plusDays(6))
+    var checklist by remember(key) { mutableStateOf(goal?.kind == GoalKind.CHECKLIST) }
+    var target by remember(key) { mutableIntStateOf(goal?.target?.coerceAtLeast(1) ?: prefill?.target ?: 3) }
+    // null = "in total" (by the end date).
+    var per by remember(key) {
+        mutableStateOf(
+            if (goal != null) goal.per
+            else when (prefill?.period) {
+                Period.MONTH -> Cadence.MONTHLY
+                Period.CUSTOM -> null
+                else -> Cadence.WEEKLY
+            }
+        )
     }
-    var startTime by remember(key) { mutableStateOf<LocalTime?>(null) }
-    var endTime by remember(key) { mutableStateOf<LocalTime?>(null) }
-    var target by remember(key) { mutableIntStateOf(goal?.target ?: prefill?.target ?: 1) }
-    var cadence by remember(key) { mutableStateOf(goal?.effectiveCadence ?: Cadence.DAILY) }
-    var recurring by remember(key) { mutableStateOf(goal?.recurring ?: prefill?.recurring ?: false) }
+    var start by remember(key) { mutableStateOf(goal?.start ?: today) }
+    var noEnd by remember(key) { mutableStateOf(goal?.let { Pacing.isOngoing(it.end) } ?: (prefill?.end == null)) }
+    var end by remember(key) { mutableStateOf(goal?.end?.takeIf { !Pacing.isOngoing(it) } ?: prefill?.end ?: today.plusWeeks(4)) }
     var priority by remember(key) { mutableStateOf(Priority.of(goal?.priority)) }
 
-    val singleDay = !noEnd && start == end
-    val valid = title.isNotBlank() && (noEnd || !end.isBefore(start)) && target >= 1
-    val effectiveEnd = if (noEnd) Pacing.ONGOING_END else end
-    // Ongoing tasks always break down; "No breakdown" only makes sense with an end date.
-    val effectiveCadence = when {
-        noEnd && cadence == Cadence.NONE -> Cadence.DAILY
-        !noEnd && target <= 1 -> Cadence.NONE
-        else -> cadence
-    }
+    // "In total" needs an end; so does nothing else.
+    val needsEnd = !checklist && per == null
+    val ongoing = noEnd && !needsEnd
+    val effectiveEnd = if (ongoing) Pacing.ONGOING_END else end
+    val valid = title.isNotBlank() && !effectiveEnd.isBefore(start) && (checklist || target >= 1)
+    val draftSpec = GoalSpec(
+        if (checklist) GoalKind.CHECKLIST else GoalKind.COUNT, if (checklist) 1 else target,
+        if (checklist) null else per, start, effectiveEnd,
+    )
 
     EditorDialog(
         title = if (goal == null) "New goal" else "Edit goal",
@@ -547,22 +557,16 @@ fun PlanEditor(
             if (goal == null) {
                 onCreate(
                     PlanDraft(
-                        title = title.trim(), tag = tag, start = start, end = effectiveEnd,
-                        startTime = if (singleDay) startTime else null, endTime = if (singleDay) endTime else null,
-                        target = target, cadence = effectiveCadence, recurring = recurring && !noEnd,
-                        priority = Priority.store(priority),
+                        title = title.trim(), tag = tag, start = start, end = effectiveEnd, checklist = checklist,
+                        target = target, per = if (checklist) null else per, priority = Priority.store(priority),
                     )
                 )
             } else {
-                val datesChanged = start != goal.start || effectiveEnd != goal.end
                 onSave(
                     goal.copy(
-                        title = title.trim(), category = tag, target = target, recurring = recurring && !noEnd,
-                        periodStart = start,
-                        period = if (datesChanged) Period.CUSTOM else goal.period,
-                        endDate = if (datesChanged || goal.period == Period.CUSTOM) effectiveEnd else goal.endDate,
-                        cadence = effectiveCadence, split = effectiveCadence != Cadence.NONE,
-                        priority = Priority.store(priority),
+                        title = title.trim(), category = tag, periodStart = start, endDate = effectiveEnd, period = Period.CUSTOM,
+                        target = if (checklist) 1 else target, cadence = if (checklist) null else per,
+                        recurring = false, split = false, priority = Priority.store(priority),
                     )
                 )
             }
@@ -572,70 +576,56 @@ fun PlanEditor(
     ) {
         TitleField(title) { title = it }
         TagPicker(tag, tagActions) { tag = it }
+
+        FieldLabel("Kind")
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            FilterChip(selected = !checklist, onClick = { checklist = false }, label = { Text("Count") })
+            FilterChip(selected = checklist, onClick = { checklist = true }, label = { Text("Checklist") })
+        }
+        Text(
+            if (checklist) "Progress is its steps. Add them on the goal's card; give each a day when you want it on Today."
+            else "Progress is linked to-dos you tick: link them with ^name, the form's “Counts towards”, or Log one on the card.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        if (!checklist) {
+            NumberField("How many", target, { target = it ?: 0 })
+            FieldLabel("Per")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf<Pair<Cadence?, String>>(
+                    Cadence.WEEKLY to "week", Cadence.MONTHLY to "month", Cadence.DAILY to "day",
+                    Cadence.THREE_DAY to "3 days", null to "in total",
+                ).forEach { (c, label) -> FilterChip(selected = per == c, onClick = { per = c }, label = { Text(label) }) }
+            }
+        }
+
+        DateField("Start", start, { d -> d?.let { start = it; if (end.isBefore(it)) end = it } }, noneLabel = null)
+        DateField(
+            if (checklist) "Deadline" else "End", if (ongoing) null else end,
+            { d -> if (d == null) noEnd = true else { noEnd = false; end = d } },
+            noneLabel = if (needsEnd) null else if (checklist) "No deadline" else "No end",
+        )
+        if (!ongoing && end.isBefore(start)) {
+            Text("The end is before the start", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
+        if (valid) {
+            Text(
+                "→ " + GoalMath.describe(draftSpec),
+                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp),
+            )
+        }
+
         FieldLabel("Priority")
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             listOf(Priority.HIGH, Priority.NORMAL, Priority.LOW).forEach { p ->
                 FilterChip(selected = priority == p, onClick = { priority = p }, label = { Text(p.label) })
             }
         }
-
-        FieldLabel("When")
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            AssistChip(onClick = { start = today; end = today; noEnd = false }, label = { Text("Today") })
-            AssistChip(onClick = {
-                start = today; end = today.with(TemporalAdjusters.nextOrSame(DayOfWeek.SUNDAY)); noEnd = false
-            }, label = { Text("This week") })
-            AssistChip(onClick = { start = today; end = today.plusWeeks(2).minusDays(1); noEnd = false }, label = { Text("2 weeks") })
-            AssistChip(onClick = {
-                start = today; end = today.withDayOfMonth(today.lengthOfMonth()); noEnd = false
-            }, label = { Text("This month") })
-            AssistChip(onClick = { noEnd = true }, label = { Text("Ongoing") })
-        }
-        DateField("Start", start, { d -> d?.let { start = it; if (end.isBefore(it)) end = it } }, noneLabel = null)
-        DateField("End", if (noEnd) null else end, { d ->
-            if (d == null) {
-                noEnd = true
-            } else {
-                noEnd = false
-                end = d
-            }
-        }, noneLabel = "No end")
-        if (!noEnd && end.isBefore(start)) {
-            Text("End is before start", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        }
-        if (singleDay && goal == null && target <= 1) {
-            Row {
-                Column(Modifier.weight(1f)) { TimeField("Start time", startTime, { startTime = it }) }
-                Column(Modifier.weight(1f)) { TimeField("End time", endTime, { endTime = it }) }
-            }
-        }
-
-        val per = when (effectiveCadence) {
-            Cadence.DAILY -> "per day"
-            Cadence.THREE_DAY -> "per 3 days"
-            Cadence.WEEKLY -> "per week"
-            Cadence.MONTHLY -> "per month"
-            Cadence.NONE -> "per day"
-        }
-        NumberField("How many times", target, { target = it ?: 0 }, suffix = if (noEnd) per else "in total")
         Text(
-            when {
-                noEnd -> "Ongoing: a to-do appears every ${per.removePrefix("per ")} until you delete it."
-                target <= 1 -> "1 = do it once (add steps on its card to track progress)."
-                else -> "Split into to-dos so you stay on pace:"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp),
+            "Plan my day uses it for the sessions it suggests when you're behind.",
+            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (target > 1 || noEnd) {
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Cadence.entries.filter { !noEnd || it != Cadence.NONE }.forEach { c ->
-                    FilterChip(selected = effectiveCadence == c, onClick = { cadence = c }, label = { Text(c.label) })
-                }
-            }
-        }
-        if (!singleDay && !noEnd) SwitchRow("Repeat when it ends", recurring) { recurring = it }
+
         if (goal != null && onFinish != null && !goal.archived) {
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = { onFinish(goal) }) { Text("Finish now (moves it to Finished)") }
@@ -650,6 +640,8 @@ fun PlanEditor(
 fun RoutineEditor(
     routine: Routine,
     tagActions: TagActions,
+    /** Active goals it can count towards. */
+    goals: List<Goal> = emptyList(),
     checkClashes: suspend (repeat: Repeat, time: LocalTime, minutes: Int, routineId: Long?) -> List<String>,
     onSave: (Routine) -> Unit,
     onDelete: (Routine) -> Unit,
@@ -668,6 +660,7 @@ fun RoutineEditor(
     var sync by remember(routine.id) { mutableStateOf(routine.syncToCalendar) }
     var active by remember(routine.id) { mutableStateOf(routine.active) }
     var remind by remember(routine.id) { mutableStateOf(routine.remind == true) }
+    var goalId by remember(routine.id) { mutableStateOf(routine.goalId) }
     var clashes by remember(routine.id) { mutableStateOf<List<String>>(emptyList()) }
     val isNew = routine.id == 0L
 
@@ -689,6 +682,7 @@ fun RoutineEditor(
                 routine.withRepeat(repeat).copy(
                     title = title.trim(), time = time, minutes = minutes?.takeIf { it > 0 },
                     category = tag, syncToCalendar = sync, active = active, remind = remind,
+                    goalId = goalId?.takeIf { id -> goals.any { it.id == id } },
                 )
             )
         },
@@ -781,6 +775,20 @@ fun RoutineEditor(
             )
         }
         TagPicker(tag, tagActions) { tag = it }
+        val countable = goals.filter { it.kind == GoalKind.COUNT }
+        if (countable.isNotEmpty()) {
+            FieldLabel("Counts towards")
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FilterChip(selected = goalId == null, onClick = { goalId = null }, label = { Text("No goal") })
+                countable.forEach { g ->
+                    FilterChip(selected = goalId == g.id, onClick = { goalId = g.id }, label = { Text(g.title, maxLines = 1) })
+                }
+            }
+            if (goalId != null) Text(
+                "Each one you tick counts as one towards the goal.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         SwitchRow("Add to Google Calendar", sync) { sync = it }
         if (time != null) SwitchRow("Remind me at the start time", remind) { remind = it }
         if (sync && time == null) {

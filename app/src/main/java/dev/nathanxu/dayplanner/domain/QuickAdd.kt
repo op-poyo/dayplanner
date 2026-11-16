@@ -27,6 +27,8 @@ data class GoalDraft(
     val target: Int,
     val recurring: Boolean,
     val tag: String? = null,
+    /** "x15 by 30/11": in total by this day (with period CUSTOM). */
+    val end: LocalDate? = null,
 ) : Parsed
 
 /**
@@ -197,7 +199,7 @@ object QuickAdd {
                 dateAllowed && dayMonth.matches(lw) && parseDate(lw, today) != null -> date = parseDate(lw, today)
                 lw == "@week" || lw == "@w" -> period = Period.WEEK
                 lw == "@month" || lw == "@m" -> period = Period.MONTH
-                lw == "!r" -> recurring = true
+                lw == "!r" -> recurring = true // old syntax: still eaten so it never lands in a title; goals no longer copy
                 lw.startsWith("#") && Tags.isValidName(lw.drop(1)) -> tag = lw.drop(1)
                 lw.length > 1 && lw.startsWith("^") -> goalHint = lw.drop(1)
                 targetRx.matches(lw) -> target = targetRx.find(lw)!!.groupValues[1].toInt().coerceAtLeast(1)
@@ -220,6 +222,9 @@ object QuickAdd {
         }
         return if (period != null) {
             GoalDraft(t, period!!, target, recurring, tag)
+        } else if (target > 1 && deadline != null) {
+            // "LeetCode x15 by 30/11": a goal of 15 in total by then.
+            GoalDraft(t, Period.CUSTOM, target, false, tag, end = deadline)
         } else {
             TaskDraft(t, date, tag, minutes?.takeIf { it > 0 }, goalHint, time, priority, deadline, repeat)
         }

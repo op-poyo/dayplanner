@@ -10,7 +10,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
     entities = [Task::class, Goal::class, Routine::class, TravelCache::class],
-    version = 7,
+    version = 8,
     exportSchema = false,
 )
 @TypeConverters(Converters::class)
@@ -71,11 +71,46 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v1.12: goals stop making to-dos and count linked ones per period.
+         * - Repeating (!r) week/month goals become one ongoing "N a week/month" goal; `cadence` now
+         *   means "per" (null = N in total over the goal's dates).
+         * - Open auto-made daily to-dos are removed; +1 logs become ordinary done to-dos (they
+         *   keep counting, and now show in history).
+         * - Repeating to-dos can count towards a goal (routines.goalId).
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MIGRATION_7_8_SQL.forEach { db.execSQL(it) }
+            }
+        }
+
         fun build(context: Context): AppDatabase =
             Room.databaseBuilder(context, AppDatabase::class.java, "dayplanner.db")
-                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 // Only for very old test installs (v1.0/1.1) that have no migration path.
                 .fallbackToDestructiveMigrationFrom(1)
                 .build()
     }
 }
+
+/** Kept apart (and plain SQL) so it can be checked against SQLite off-device. 2932896 = 9999-12-31, "no end". */
+internal val MIGRATION_7_8_SQL = listOf(
+    "ALTER TABLE `routines` ADD COLUMN `goalId` INTEGER",
+    // Repeating weekly/monthly goals → ongoing "per" goals.
+    "UPDATE `goals` SET `cadence` = CASE `period` WHEN 'WEEK' THEN 'WEEKLY' ELSE 'MONTHLY' END, `endDate` = 2932896, `recurring` = 0 " +
+        "WHERE `recurring` = 1 AND `archived` = 0 AND `period` IN ('WEEK', 'MONTH')",
+    // A repeating custom 7-day goal is a weekly one; other repeating custom ones just end.
+    "UPDATE `goals` SET `cadence` = 'WEEKLY', `endDate` = 2932896, `recurring` = 0 " +
+        "WHERE `recurring` = 1 AND `archived` = 0 AND `period` = 'CUSTOM' AND `endDate` - `periodStart` = 6",
+    "UPDATE `goals` SET `recurring` = 0 WHERE `archived` = 0",
+    // Ongoing goals keep their per-period ("3 a week"); none/unset meant daily.
+    "UPDATE `goals` SET `cadence` = CASE WHEN `cadence` IS NULL OR `cadence` = 'NONE' THEN 'DAILY' ELSE `cadence` END WHERE `endDate` = 2932896",
+    // Everything else is "N in total by the end": the old breakdown setting goes.
+    "UPDATE `goals` SET `cadence` = NULL WHERE `endDate` IS NULL OR `endDate` != 2932896",
+    // Auto-made to-dos that weren't ticked go; ticked ones stay (and count).
+    "DELETE FROM `tasks` WHERE `genKey` LIKE 'g:%' AND `done` = 0",
+    // +1 logs become ordinary done to-dos.
+    "UPDATE `tasks` SET `genKey` = NULL WHERE `genKey` LIKE 'l:%'",
+)
+

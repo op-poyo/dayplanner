@@ -32,7 +32,7 @@ class BackupCodecTest {
         routines = listOf(
             Routine(id = 1, title = "Gym", category = "gym", minutes = 60, daysMask = 0b0010101, active = true,
                 time = LocalTime.of(7, 0), syncToCalendar = true, calendarEventId = 999, remind = false),
-            Routine(id = 2, title = "Read", daysMask = 127, time = null, remind = null, repeatUnit = "MONTH", repeatEvery = 2, repeatFrom = d),
+            Routine(id = 2, title = "Read", daysMask = 127, time = null, remind = null, repeatUnit = "MONTH", repeatEvery = 2, repeatFrom = d, goalId = 2),
         ),
         tags = listOf(Tag("study", "Study", 0xFF3366CC.toInt()), Tag("gym", "Gym", 0xFF22AA55.toInt())),
         settings = SettingsState(

@@ -5,6 +5,8 @@ import androidx.room.Index
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import dev.nathanxu.dayplanner.domain.Cadence
+import dev.nathanxu.dayplanner.domain.GoalKind
+import dev.nathanxu.dayplanner.domain.GoalSpec
 import dev.nathanxu.dayplanner.domain.Period
 import dev.nathanxu.dayplanner.domain.Repeat
 import dev.nathanxu.dayplanner.domain.Tags
@@ -65,8 +67,6 @@ data class Task(
 
 object GenKeys {
     fun routine(routineId: Long, date: LocalDate) = "r:$routineId:${date.toEpochDay()}"
-    fun split(goalId: Long, date: LocalDate) = "g:$goalId:${date.toEpochDay()}"
-    fun log(goalId: Long) = "l:$goalId:${System.currentTimeMillis()}"
 }
 
 @Entity(tableName = "goals", indices = [Index("periodStart")])
@@ -76,15 +76,20 @@ data class Goal(
     val period: Period,
     val periodStart: LocalDate,
     val target: Int = 1,
+    /** Before v1.12: "start again when it ends" (made a copy per period). Unused now. */
     val recurring: Boolean = false,
     val archived: Boolean = false,
     /** Tag key (see [Tags]); built-in keys match the old category names. */
     val category: String = Tags.OTHER,
     /** For count goals: auto-create paced to-dos. Off = log with +1 only. */
+    /** Before v1.12: auto-make daily to-dos. Unused now (goals never make to-dos). */
     val split: Boolean = true,
     /** Inclusive last day. null = end of the WEEK/MONTH period that starts at [periodStart]. */
     val endDate: LocalDate? = null,
-    /** Breakdown size for the paced to-dos. null = daily (rows from before v1.3). */
+    /**
+     * Since v1.12: the window for "N per …" (DAILY / THREE_DAY / WEEKLY / MONTHLY); null = N in
+     * total over start–end. (Before, this was how auto-made to-dos were split.)
+     */
     val cadence: Cadence? = null,
     /** Priority name for its to-dos (HIGH/LOW); null = normal. */
     val priority: String? = null,
@@ -93,7 +98,11 @@ data class Goal(
 /** [periodStart] is the plan's first day for every kind of plan. */
 val Goal.start: LocalDate get() = periodStart
 val Goal.end: LocalDate get() = endDate ?: period.lastDay(periodStart)
-val Goal.effectiveCadence: Cadence get() = if (!split) Cadence.NONE else cadence ?: Cadence.DAILY
+/** "N per …" window, or null for "N in total by the end". */
+val Goal.per: Cadence? get() = cadence?.takeIf { it != Cadence.NONE }
+/** A checklist is a goal with no count: progress is its steps. */
+val Goal.kind: GoalKind get() = if (per == null && target <= 1) GoalKind.CHECKLIST else GoalKind.COUNT
+val Goal.spec: GoalSpec get() = GoalSpec(kind, target, per, start, end)
 /** No end date: the target is per breakdown bucket (e.g. 3 a week), forever. */
 val Goal.isOngoing: Boolean get() = endDate == dev.nathanxu.dayplanner.domain.Pacing.ONGOING_END
 fun Goal.isActiveOn(date: LocalDate): Boolean = !date.isBefore(start) && !date.isAfter(end)
@@ -116,6 +125,8 @@ data class Routine(
     val calendarEventId: Long? = null,
     /** Remind at the routine's time. Only true reminds (null = off, as for older rows). */
     val remind: Boolean? = null,
+    /** The goal its to-dos count towards. */
+    val goalId: Long? = null,
     /** Repeat rule (see [Repeat]); all null = weekly on [daysMask], as before v1.9. */
     val repeatUnit: String? = null,
     val repeatEvery: Int? = null,
@@ -136,19 +147,6 @@ data class TravelCache(
     @PrimaryKey val key: String,
     val seconds: Int,
     val fetchedAt: Long,
-)
-
-/** Done units for one plan on one day. */
-data class GoalDayUnits(val goalId: Long, val date: LocalDate, val units: Int)
-
-/** Per-goal aggregates over linked tasks. */
-data class GoalStats(
-    val goalId: Long,
-    val doneUnits: Int,
-    val stepTotal: Int,
-    val stepDone: Int,
-    val todayUnits: Int,
-    val todayDoneUnits: Int,
 )
 
 class Converters {

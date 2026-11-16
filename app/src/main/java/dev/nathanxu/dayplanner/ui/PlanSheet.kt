@@ -89,6 +89,9 @@ fun PlanSheet(
                 ToggleLine("Add blocks to ${preview.calendarName}", addToCalendar) { addToCalendar = it }
             }
             preview?.notes?.forEach { Hint(it) }
+            if (preview != null && preview.suggested.isNotEmpty()) {
+                Hint("Sessions marked “suggested” are for goals that are behind. They're unticked: tick the ones you want.")
+            }
             if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(vertical = 12.dp))
 
             if (preview != null && !state.busy) {
@@ -109,7 +112,10 @@ fun PlanSheet(
                     val rows = (dayBlocks.map { it.startMin to it } + kept.map { it.startMin to it }).sortedBy { it.first }
                     rows.forEach { (_, r) ->
                         when (r) {
-                            is Block -> BlockRow(r, Tags.find(r.tag ?: Tags.OTHER, tags), r.itemId !in state.excluded) { onToggle(r.itemId) }
+                            is Block -> BlockRow(
+                                r, Tags.find(r.tag ?: Tags.OTHER, tags), r.itemId !in state.excluded,
+                                suggested = r.itemId in preview.suggested,
+                            ) { onToggle(r.itemId) }
                             is Busy -> KeptRow(r)
                             else -> Unit
                         }
@@ -131,7 +137,7 @@ fun PlanSheet(
 }
 
 @Composable
-private fun BlockRow(b: Block, tag: Tag, chosen: Boolean, onToggle: () -> Unit) {
+private fun BlockRow(b: Block, tag: Tag, chosen: Boolean, suggested: Boolean = false, onToggle: () -> Unit) {
     Row(Modifier.fillMaxWidth().clickable(onClick = onToggle), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = chosen, onCheckedChange = { onToggle() })
         Text(
@@ -149,6 +155,7 @@ private fun BlockRow(b: Block, tag: Tag, chosen: Boolean, onToggle: () -> Unit) 
                 color = if (chosen) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
             )
             val meta = listOfNotNull(
+                "suggested: goal is behind".takeIf { suggested },
                 Durations.short(b.minutes),
                 if (b.travelBefore > 0) "${b.travelBefore} min travel before" else null,
                 if (b.protected) "protected time" else null,

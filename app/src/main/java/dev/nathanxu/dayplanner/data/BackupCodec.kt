@@ -110,6 +110,7 @@ object BackupCodec {
         "active" to r.active, "time" to r.time?.hm(), "syncToCalendar" to r.syncToCalendar,
         "calendarEventId" to r.calendarEventId, "remind" to r.remind,
         "repeatUnit" to r.repeatUnit, "repeatEvery" to r.repeatEvery, "repeatFrom" to r.repeatFrom?.toString(),
+        "goalId" to r.goalId,
     )
 
     private fun routine(m: Map<*, *>) = Routine(
@@ -118,6 +119,7 @@ object BackupCodec {
         syncToCalendar = m["syncToCalendar"] != false, calendarEventId = m.optLong("calendarEventId"),
         remind = m["remind"] as? Boolean,
         repeatUnit = m.optStr("repeatUnit"), repeatEvery = m.optInt("repeatEvery"), repeatFrom = m.date("repeatFrom"),
+        goalId = m.optLong("goalId"),
     )
 
     // ---------- settings (no calendar ids: those belong to one phone) ----------

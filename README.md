@@ -29,19 +29,22 @@ One box adds everything:
 | Type | Gets you |
 |---|---|
 | `Problem sheet 4 fri #study 1h30` | Task on Friday, Study, 90 min |
-| `LeetCode mediums x5 @week !r` | Weekly goal, target 5, renews every Monday |
+| `LeetCode x5 @week` | Goal: 5 every week (Mon–Sun). Adds no to-dos |
+| `LeetCode 45m weekdays ^leetcode` | Repeating to-do whose ticks count towards that goal |
 | `Two-sum tmr 30m ^leetcode` | Task tomorrow that counts towards that goal when ticked |
 | `Read Hull ch.3 someday` | Undated task that stays in the list |
-| `COMP0205 report @month` | Steps goal: add steps on its card (`Draft intro tue`), % = steps ticked |
+| `Mock interviews x6 by 20/12` | Goal: 6 in total by 20 Dec |
+| *New goal → Checklist* | Steps goal: add steps on its card (`Draft intro tue`), progress = steps ticked |
 | `Gym 18:00 1h #gym` (Routines tab, Mon/Wed/Fri) | Daily to-do on those days **and** a weekly repeating Google Calendar event |
 
-### Goals → daily to-dos and percentages
+### Goals (v1.12): goals keep score, to-dos do the work
 
-- **Count goals** (`x5`) split themselves into a paced daily to-do. A weekly ×5 gives one a day with two rest days; if you miss days, the next day's to-do catches you up (`LeetCode mediums ×2`). Ticking it adds its whole amount. `+1` logs extra.
-- Each card shows **%**, "n of N", and pace: *on pace*, *2 behind*, *1 ahead*, plus today's share (`today 1/2`).
-- **Steps goals** (no number) track the steps you add on the card or with `^word` from quick-add.
-- Today screen shows every current goal's % at a glance, and each linked task shows its goal's % (`→ LeetCode 40%`). The widget shows the top three.
-- `Split ✓` on a card turns the daily split off if you'd rather just log with `+1`.
+- **Goals never create to-dos.** A goal counts the to-dos linked to it that you tick: one-off (`^leetcode`, + To-do on the card) or repeating (`^leetcode` on a repeating one, or *Counts towards* in its form).
+- **Count goals:** *N a day / every 3 days / a week (Mon–Sun) / a month*, ongoing or until an end date, or *N in total by a date*. One goal, with a bar per past week/month.
+- **Checklist goals:** named steps (each a to-do you can give a day from the card). Progress = steps ticked.
+- The card says where you stand: *1 of 3 this week · 4 days left · 1 behind*. **Log one** records a session you didn't plan; **+ To-do** adds a linked to-do for today.
+- Behind goals go red on Today's strip, and **Plan my day** suggests sessions for them (unticked: tick the ones you want).
+- Travel is out of stage 1: the code stays, Today shows no travel rows while it's off.
 
 ### Routines → Google Calendar
 

@@ -35,6 +35,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.foundation.background
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,15 +52,18 @@ import androidx.compose.ui.unit.dp
 import dev.nathanxu.dayplanner.data.Goal
 import dev.nathanxu.dayplanner.data.GoalProgress
 import dev.nathanxu.dayplanner.data.Task
-import dev.nathanxu.dayplanner.data.effectiveCadence
+import dev.nathanxu.dayplanner.data.per
+import dev.nathanxu.dayplanner.data.repeat
+import dev.nathanxu.dayplanner.data.spec
 import dev.nathanxu.dayplanner.data.end
 import dev.nathanxu.dayplanner.data.isOngoing
 import dev.nathanxu.dayplanner.data.start
 import dev.nathanxu.dayplanner.domain.Labels
 import dev.nathanxu.dayplanner.domain.TodoSort
 import dev.nathanxu.dayplanner.domain.Cadence
-import dev.nathanxu.dayplanner.domain.GoalMode
-import dev.nathanxu.dayplanner.domain.GoalStatus
+import dev.nathanxu.dayplanner.domain.GoalKind
+import dev.nathanxu.dayplanner.domain.GoalMath
+import dev.nathanxu.dayplanner.domain.GoalState
 import dev.nathanxu.dayplanner.domain.Tag
 import dev.nathanxu.dayplanner.domain.Tags
 import dev.nathanxu.dayplanner.domain.TodoGroups
@@ -66,11 +73,10 @@ import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
 
 class GoalActions(
+    /** A done session for today ("Log one"). */
     val onLog: (Goal) -> Unit,
-    /** Takes back the latest unit of progress. */
-    val onUnlog: (Goal) -> Unit,
-    val onSetRecurring: (Goal, Boolean) -> Unit,
-    val onSetSplit: (Goal, Boolean) -> Unit,
+    /** An open to-do for today, linked to the goal ("+ To-do"). */
+    val onAddTodo: (Goal) -> Unit,
     val onDelete: (Goal) -> Unit,
     val onAddStep: (Goal, String) -> Unit,
     /** Opens the full step form, prefilled from the typed text. */
@@ -78,6 +84,8 @@ class GoalActions(
     val onToggleStep: (Task) -> Unit,
     val onEdit: (Goal) -> Unit,
     val onEditStep: (Task) -> Unit,
+    /** Give a step a day (null = none). */
+    val onScheduleStep: (Task, LocalDate?) -> Unit,
     val onExtend: (Goal, LocalDate) -> Unit,
     val onClearFinished: () -> Unit = {},
 )
@@ -181,7 +189,7 @@ private fun androidx.compose.foundation.lazy.LazyListScope.longTerm(
     val later = goals.filter { it.goal.start.isAfter(today) }.sortedBy { it.goal.start }
     item(key = "now") { SectionHeader("Now" + overallPercent(now.map { it.status })) }
     if (now.isEmpty()) item(key = "now-empty") {
-        EmptyNote("No goals yet. A goal turns something big (“15 LeetCode problems in 3 weeks”, “gym 3× a week”) into a small to-do each day. Type one below, e.g. “LeetCode x15 @month”.")
+        EmptyNote("No goals yet. A goal keeps score (“gym 3 a week”, “15 LeetCode by 30/11”, or a checklist of steps); your to-dos do the work. Type one below, e.g. “Gym x3 @week”, then link to-dos with ^gym.")
     }
     items(now, key = { it.goal.id }) { gp ->
         GoalCard(gp, today, Tags.find(gp.goal.category, tags), actions)
@@ -312,10 +320,13 @@ private fun FinishedRow(gp: GoalProgress, tag: Tag, a: GoalActions) {
 @Composable
 private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalActions) {
     val g = gp.goal
-    val s = gp.status
+    val st = gp.status
+    val checklist = st.kind == GoalKind.CHECKLIST
     val haptic = rememberHaptic()
-    var showSteps by rememberSaveable(g.id) { mutableStateOf(s.mode == GoalMode.STEPS) }
+    val openSteps = gp.steps.filter { !it.done }
+    var showSteps by rememberSaveable(g.id) { mutableStateOf(checklist) }
     var extending by rememberSaveable("ext${g.id}") { mutableStateOf(false) }
+    val warn = st.needsAttention
 
     Card(
         Modifier.fillMaxWidth(),
@@ -327,163 +338,195 @@ private fun GoalCard(gp: GoalProgress, today: LocalDate, tag: Tag, a: GoalAction
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         TagDot(tag.color)
                         Spacer(Modifier.width(8.dp))
+                        Text(g.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    // What it is, then where it stands: the two lines that matter.
+                    Text(GoalMath.describe(g.spec), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        statusLine(st),
+                        style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Medium,
+                        color = when {
+                            st.complete -> MaterialTheme.colorScheme.primary
+                            warn -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurface
+                        },
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                    if (gp.routines.isNotEmpty()) {
                         Text(
-                            g.title, style = MaterialTheme.typography.titleMedium,
+                            "Counts: " + gp.routines.joinToString(", ") { it.title + " (" + it.repeat.describe().lowercase() + ")" },
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2, overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    Spacer(Modifier.height(2.dp))
-                    Text(rangeLine(g, today), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(detailLine(s, g), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    paceLine(s, g)?.let { (text, behind) ->
-                        Text(
-                            text,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                            color = if (behind) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = 2.dp),
-                        )
-                    }
                 }
-                // Progress ring: the one number that matters, at a glance.
                 Box(Modifier.padding(end = 8.dp).size(60.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(
-                        progress = { s.fraction },
+                        progress = { st.fraction },
                         modifier = Modifier.size(60.dp),
                         strokeWidth = 6.dp,
-                        color = androidx.compose.ui.graphics.Color(tag.color),
+                        color = if (warn) MaterialTheme.colorScheme.error else androidx.compose.ui.graphics.Color(tag.color),
                         trackColor = MaterialTheme.colorScheme.surfaceVariant,
                     )
-                    Text("${s.percent}%", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
+                    Text(if (st.target == 0) "–" else "${st.done}/${st.target}", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold)
                 }
             }
+            if (st.history.size > 1) HistoryBars(st.history, st.target, g.per)
 
             AnimatedVisibility(showSteps) {
                 Column(Modifier.padding(top = 6.dp)) {
-                    gp.steps.forEach { step -> StepRow(step, today, { a.onToggleStep(step) }, { a.onEditStep(step) }) }
-                    QuickAddBar(
-                        placeholder = "Add step, e.g. Draft intro tue 1h by 20/11",
-                        onSubmit = { a.onAddStep(g, it) },
-                        onExpand = { a.onExpandStep(g, it) },
-                        modifier = Modifier.padding(end = 8.dp, top = 4.dp),
-                    )
+                    if (gp.steps.isEmpty()) {
+                        Text(
+                            if (checklist) "No steps yet. Add the first one below." else "No planned sessions. Use + To-do, or Plan my day.",
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // A count goal lists only what's still planned; a checklist shows all its steps.
+                    (if (checklist) gp.steps else openSteps).forEach { step ->
+                        StepRow(step, today, { a.onToggleStep(step) }, { a.onEditStep(step) }, { d -> a.onScheduleStep(step, d) })
+                    }
+                    if (checklist) {
+                        QuickAddBar(
+                            placeholder = "Add step, e.g. Draft intro 1h",
+                            onSubmit = { a.onAddStep(g, it) },
+                            onExpand = { a.onExpandStep(g, it) },
+                            modifier = Modifier.padding(end = 8.dp, top = 4.dp),
+                        )
+                    }
                 }
             }
             AnimatedVisibility(extending) {
                 Column(Modifier.padding(top = 6.dp)) {
-                    Text(
-                        "Extend from ${g.end.format(DateTimeFormatter.ofPattern("EEE d MMM"))}:",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Text("Extend from ${g.end.format(DateTimeFormatter.ofPattern("EEE d MMM"))}:", style = MaterialTheme.typography.bodySmall)
                     ExtendChips(g) { goal, d -> extending = false; a.onExtend(goal, d) }
                 }
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                when (s.mode) {
-                    GoalMode.COUNT -> {
-                        OutlinedButton(onClick = { haptic(); a.onUnlog(g) }, enabled = s.done > 0) { Text("−1") }
-                        Spacer(Modifier.width(6.dp))
-                        // A finished count can't go past its target; ongoing ones can (extra is fine).
-                        FilledTonalButton(onClick = { haptic(); a.onLog(g) }, enabled = g.isOngoing || !s.complete) { Text("+1") }
-                    }
-                    GoalMode.SINGLE -> if (!s.complete) {
-                        FilledTonalButton(onClick = { haptic(); a.onLog(g) }) { Text("Done") }
-                    } else {
-                        OutlinedButton(onClick = { a.onUnlog(g) }) { Text("Undo") }
-                    }
-                    GoalMode.STEPS -> Unit
+                if (!checklist) {
+                    FilledTonalButton(onClick = { haptic(); a.onLog(g) }) { Text("Log one") }
+                    Spacer(Modifier.width(6.dp))
+                    OutlinedButton(onClick = { a.onAddTodo(g) }) { Text("+ To-do") }
                 }
                 TextButton(onClick = { showSteps = !showSteps }) {
-                    Text(if (showSteps) "Hide" else if (gp.steps.isEmpty()) "Steps" else "Steps ${gp.steps.size}")
+                    Text(
+                        when {
+                            showSteps -> "Hide"
+                            checklist -> "Steps ${gp.steps.count { it.done }}/${gp.steps.size}"
+                            openSteps.isEmpty() -> "Planned"
+                            else -> "Planned ${openSteps.size}"
+                        }
+                    )
                 }
                 if (!g.isOngoing) TextButton(onClick = { extending = !extending }) { Text("Extend") }
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = { a.onDelete(g) }) {
-                    Icon(Icons.Default.Delete, contentDescription = "Delete task", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.Default.Delete, contentDescription = "Delete goal", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
     }
 }
 
-private fun overallPercent(statuses: List<GoalStatus>): String =
-    if (statuses.isEmpty()) "" else " · ${statuses.map { it.fraction }.average().times(100).roundToInt()}%"
+/** "1 of 3 this week · 4 days left · 1 behind", "Done this week ✓", "2 of 5 steps · by 30 Nov". */
+private fun statusLine(st: GoalState): String {
+    if (st.window == null) return st.label.replaceFirstChar(Char::uppercase)
+    if (st.kind == GoalKind.CHECKLIST) {
+        if (st.target == 0) return "No steps yet"
+        if (st.complete) return "All ${st.target} steps done ✓"
+        return listOfNotNull(
+            "${st.done} of ${st.target} steps",
+            st.label.takeIf { it != "steps" },
+            "${st.behindBy} behind".takeIf { st.behindBy > 0 },
+        ).joinToString(" · ")
+    }
+    if (st.complete) return "Done ${st.label} ✓" + if (st.done > st.target) " (${st.done})" else ""
+    val left = when (st.daysLeft) {
+        0 -> null
+        1 -> "last day"
+        else -> "${st.daysLeft} days left"
+    }
+    return listOfNotNull(
+        "${st.done} of ${st.target} ${st.label}",
+        left.takeIf { st.label != "today" },
+        if (st.behindBy > 0) "${st.behindBy} behind" else "on pace",
+    ).joinToString(" · ")
+}
+
+/** Small bars for recent periods (oldest first; the last is now), so you see the trend. */
+@Composable
+private fun HistoryBars(history: List<Int>, target: Int, per: Cadence?) {
+    val max = maxOf(target, history.maxOrNull() ?: 0, 1)
+    val unit = when (per) {
+        Cadence.WEEKLY -> "weeks"
+        Cadence.MONTHLY -> "months"
+        Cadence.DAILY -> "days"
+        else -> "periods"
+    }
+    Row(Modifier.padding(top = 6.dp), verticalAlignment = Alignment.Bottom) {
+        Text("Last $unit ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        history.forEachIndexed { i, n ->
+            val now = i == history.lastIndex
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(horizontal = 3.dp)) {
+                Box(
+                    Modifier.width(14.dp).height((3 + 21 * n / max).dp).background(
+                        when {
+                            n >= target -> MaterialTheme.colorScheme.primary
+                            now -> MaterialTheme.colorScheme.tertiary
+                            else -> MaterialTheme.colorScheme.outlineVariant
+                        },
+                        androidx.compose.foundation.shape.RoundedCornerShape(3.dp),
+                    ),
+                )
+                Text("$n", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
 
 private val dMMM = DateTimeFormatter.ofPattern("d MMM")
 
-private fun rangeLine(g: Goal, today: LocalDate): String {
-    if (g.isOngoing) {
-        val per = when (g.effectiveCadence) {
-            Cadence.THREE_DAY -> "every 3 days"
-            Cadence.WEEKLY -> "a week"
-            Cadence.MONTHLY -> "a month"
-            else -> "a day"
-        }
-        return "Ongoing since ${g.start.format(dMMM)} · ${g.target} $per"
-    }
-    val range = "${g.start.format(dMMM)} – ${g.end.format(dMMM)}"
-    val left = ChronoUnit.DAYS.between(today, g.end) + 1
-    val timing = when {
-        g.start.isAfter(today) -> "starts ${g.start.format(DateTimeFormatter.ofPattern("EEE d MMM"))}"
-        left == 1L -> "ends today"
-        else -> "$left days left"
-    }
-    val cadence = g.effectiveCadence.takeIf { g.target > 1 && it != Cadence.NONE }?.let { " · ${it.label.lowercase()}" } ?: ""
-    return "$range · $timing$cadence" + if (g.recurring) " · repeats" else ""
-}
+private fun overallPercent(statuses: List<GoalState>): String =
+    statuses.filter { it.window != null && it.target > 0 }.takeIf { it.isNotEmpty() }
+        ?.let { l -> " · ${l.map { it.fraction }.average().times(100).roundToInt()}%" } ?: ""
 
-
-private fun detailLine(s: GoalStatus, g: Goal): String = if (g.isOngoing) {
-    "${s.done} of ${s.total} ${g.effectiveCadence.short.ifEmpty { "today" }}"
-} else when (s.mode) {
-    GoalMode.COUNT -> "${s.done} of ${s.total} done"
-    GoalMode.STEPS -> "${s.done} of ${s.total} steps done"
-    GoalMode.SINGLE -> if (s.complete) "Done" else "Not done yet"
-}
-
-/** (text, isBehind) or null. */
-private fun paceLine(s: GoalStatus, g: Goal): Pair<String, Boolean>? {
-    if (g.isOngoing) {
-        val bucket = g.effectiveCadence.short.ifEmpty { "today" }
-        return if (s.complete) "Done $bucket ✓" to false else "${s.total - s.done} left $bucket" to false
-    }
-    if (s.mode != GoalMode.COUNT || s.complete) return null
-    val cadence = g.effectiveCadence
-    val today = when {
-        cadence == Cadence.NONE -> ""
-        s.todayPlanned == 0 -> if (cadence == Cadence.DAILY) " · rest day" else " · nothing due ${cadence.short}"
-        cadence == Cadence.DAILY -> " · today ${s.todayDone}/${s.todayPlanned}"
-        else -> " · ${s.todayPlanned - s.todayDone} left ${cadence.short}"
-    }
-    val d = s.paceDelta ?: 0
-    return when {
-        d < 0 -> "${-d} behind pace$today" to true
-        d > 0 -> "$d ahead of pace$today" to false
-        else -> "On pace$today" to false
-    }
-}
-
+/** A step (or planned session): tick, open, or give it a day. */
 @Composable
-private fun StepRow(task: Task, today: LocalDate, onToggle: () -> Unit, onEdit: () -> Unit) {
+private fun StepRow(task: Task, today: LocalDate, onToggle: () -> Unit, onEdit: () -> Unit, onSchedule: (LocalDate?) -> Unit) {
+    val ctx = LocalContext.current
+    var menu by remember { mutableStateOf(false) }
     val overdue = !task.done && task.date != null && task.date.isBefore(today)
     Row(Modifier.fillMaxWidth().clickable(onClick = onEdit), verticalAlignment = Alignment.CenterVertically) {
         Checkbox(checked = task.done, onCheckedChange = { onToggle() }, modifier = Modifier.size(36.dp))
         Text(
-            task.title,
-            modifier = Modifier.weight(1f),
+            task.title, modifier = Modifier.weight(1f),
             textDecoration = if (task.done) TextDecoration.LineThrough else null,
             maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
-        Text(
-            when {
-                task.date == null -> "someday"
-                task.date == today -> "today"
-                else -> task.date.format(DateTimeFormatter.ofPattern("EEE d"))
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(end = 8.dp),
-        )
+        Box {
+            TextButton(onClick = { menu = true }, enabled = !task.done) {
+                Text(
+                    when {
+                        task.date == null -> "Pick day ▾"
+                        task.date == today -> "Today ▾"
+                        task.date == today.plusDays(1) -> "Tomorrow ▾"
+                        else -> task.date.format(DateTimeFormatter.ofPattern("EEE d")) + " ▾"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (overdue) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                )
+            }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("Today") }, onClick = { menu = false; onSchedule(today) })
+                DropdownMenuItem(text = { Text("Tomorrow") }, onClick = { menu = false; onSchedule(today.plusDays(1)) })
+                DropdownMenuItem(text = { Text("Pick a day…") }, onClick = {
+                    menu = false
+                    val d = task.date ?: today
+                    android.app.DatePickerDialog(ctx, { _, y, m, day -> onSchedule(LocalDate.of(y, m + 1, day)) }, d.year, d.monthValue - 1, d.dayOfMonth).show()
+                })
+                if (task.date != null) DropdownMenuItem(text = { Text("No day") }, onClick = { menu = false; onSchedule(null) })
+            }
+        }
     }
 }

@@ -259,14 +259,13 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
     val goalActions = run {
         GoalActions(
             onLog = { vm.logGoal(it) },
-            onUnlog = { vm.unlogGoal(it) },
-            onSetRecurring = { g, on -> vm.setRecurring(g, on) },
-            onSetSplit = { g, on -> vm.setSplit(g, on) },
+            onAddTodo = { vm.addTodoForGoal(it) },
             onDelete = { vm.deleteGoal(it) },
             onAddStep = { g, text -> vm.addStep(g, text) },
             onToggleStep = { vm.toggle(it) },
             onEdit = { editingGoal = it },
             onEditStep = { editingTask = it },
+            onScheduleStep = { t, d -> vm.scheduleTask(t, d) },
             onExpandStep = { g, text -> editingTask = draftTask(text, today, tags, vm).copy(goalId = g.id, category = g.category) },
             onExtend = { g, d -> vm.extendGoal(g, d) },
             onClearFinished = { vm.clearFinished() },
@@ -640,6 +639,7 @@ private fun AppRoot(vm: MainViewModel, quickAddRequest: Int, reviewRequest: Int 
         RoutineEditor(
             routine = r,
             tagActions = tagActions,
+            goals = goals.map { it.goal },
             checkClashes = { repeat, time, minutes, id -> vm.clashesFor(repeat, time, minutes, id) },
             onSave = {
                 if (it.id == 0L) vm.createRoutine(it) else vm.updateRoutine(it)
