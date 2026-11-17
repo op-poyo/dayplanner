@@ -167,7 +167,17 @@ class Repository(
         db.goals().observeFinished(),
         db.tasks().observeLinked(),
     ) { goals, linked -> goals.map { progressOf(it, linked, emptyList(), it.end) } }
+    
+    // ---------- tags ----------
 
+    /** Tag key for "#raw" (created if new), or Other. Second value: whether it was created. */
+    private fun tagFor(raw: String?): Pair<String, Tag?> {
+        if (raw == null) return Tags.OTHER to null
+        val (tag, created) = tags.resolveOrCreate(raw)
+        return tag.key to if (created) tag else null
+    }
+
+    // ---------- accounts / calendars ----------
     suspend fun calendars(): List<CalInfo> = calendar.calendars()
 
     fun googleAccounts(cals: List<CalInfo>): List<String> =
